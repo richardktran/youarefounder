@@ -1,0 +1,24 @@
+# Rust
+target/
+Cargo.lock
+
+# Node
+node_modules/
+apps/web/.next/
+apps/web/out/
+
+# Environment
+.env
+.env.local
+
+# App data (embedded postgres data directory)
+data/
+
+# OS
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.idea/
+*.iml

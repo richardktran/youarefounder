@@ -1,0 +1,24 @@
+# Developer convenience only — end users do NOT need this.
+# The app manages its own embedded PostgreSQL for production/local-install use.
+# Run: docker compose up -d
+# Then: DATABASE_URL=postgres://yaf:yaf@localhost:5433/yaf cargo run -p api
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: yaf
+      POSTGRES_PASSWORD: yaf
+      POSTGRES_DB: yaf
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yaf"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

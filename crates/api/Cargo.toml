@@ -1,0 +1,55 @@
+[package]
+name = "api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[dependencies]
+domain       = { path = "../domain" }
+db           = { path = "../db" }
+ai-core      = { path = "../ai-core" }
+ai-providers = { path = "../ai-providers" }
+
+# Async
+tokio = { workspace = true }
+
+# HTTP
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# DB
+sqlx = { workspace = true }
+
+# Types
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Errors
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Config
+figment = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# In-process cache
+moka = { workspace = true }
+
+# Embedded Postgres
+pg-embed = { workspace = true }
+
+# Utilities
+slug = { workspace = true }
+directories = { workspace = true }

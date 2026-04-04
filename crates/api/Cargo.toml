@@ -53,3 +53,7 @@ pg-embed = { workspace = true }
 # Utilities
 slug = { workspace = true }
 directories = { workspace = true }
+
+# Streaming
+futures-util = { workspace = true }
+tokio-stream = { workspace = true }

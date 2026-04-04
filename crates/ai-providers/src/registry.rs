@@ -6,7 +6,7 @@
 use ai_core::{AiError, InferenceProvider};
 use serde::{Deserialize, Serialize};
 
-use crate::OllamaAdapter;
+use crate::ollama::{OllamaAdapter, DEFAULT_REQUEST_TIMEOUT_SECS};
 
 // ─── Provider metadata (returned by GET /v1/ai-providers) ────────────────────
 
@@ -84,7 +84,16 @@ impl ProviderRegistry {
                     .and_then(|v| v.as_str())
                     .unwrap_or("http://127.0.0.1:11434")
                     .to_string();
-                Ok(Box::new(OllamaAdapter::new(base_url)))
+                let request_timeout_secs = provider_config
+                    .get("request_timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS)
+                    .clamp(30, 7200);
+                Ok(Box::new(OllamaAdapter::with_timeouts(
+                    base_url,
+                    request_timeout_secs,
+                    10,
+                )))
             }
             kind => Err(AiError::UnsupportedProvider(kind.to_string())),
         }

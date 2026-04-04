@@ -50,6 +50,7 @@ pub async fn enqueue(
 }
 
 /// Claim the next pending job using SKIP LOCKED to avoid contention.
+/// Only claims jobs for companies whose run_state is 'running'.
 pub async fn claim_next(pool: &PgPool) -> Result<Option<AgentJob>> {
     let row = sqlx::query(
         "UPDATE agent_jobs
@@ -57,12 +58,14 @@ pub async fn claim_next(pool: &PgPool) -> Result<Option<AgentJob>> {
              started_at = NOW(),
              attempts   = attempts + 1
          WHERE id = (
-             SELECT id FROM agent_jobs
-             WHERE status = 'pending'
-               AND run_at <= NOW()
-             ORDER BY run_at ASC
+             SELECT aj.id FROM agent_jobs aj
+             JOIN companies c ON c.id = aj.company_id
+             WHERE aj.status = 'pending'
+               AND aj.run_at <= NOW()
+               AND c.run_state = 'running'
+             ORDER BY aj.run_at ASC
              LIMIT 1
-             FOR UPDATE SKIP LOCKED
+             FOR UPDATE OF aj SKIP LOCKED
          )
          RETURNING id, kind, company_id, payload, status, run_at,
                    started_at, completed_at, error, attempts, max_attempts, created_at",
@@ -71,6 +74,28 @@ pub async fn claim_next(pool: &PgPool) -> Result<Option<AgentJob>> {
     .await?;
 
     Ok(row.as_ref().map(row_to_job))
+}
+
+/// List recent agent jobs for a company (newest first).
+pub async fn list_jobs(
+    pool: &PgPool,
+    company_id: Uuid,
+    limit: i64,
+) -> Result<Vec<AgentJob>> {
+    let rows = sqlx::query(
+        "SELECT id, kind, company_id, payload, status, run_at,
+                started_at, completed_at, error, attempts, max_attempts, created_at
+         FROM agent_jobs
+         WHERE company_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2",
+    )
+    .bind(company_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(row_to_job).collect())
 }
 
 pub async fn complete_job(pool: &PgPool, job_id: Uuid) -> Result<()> {

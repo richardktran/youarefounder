@@ -93,8 +93,8 @@ pub async fn complete_onboarding(
         &state.pool,
         company_id,
         UpdateCompanyInput {
-            name: None,
             onboarding_complete: Some(true),
+            ..Default::default()
         },
     )
     .await?

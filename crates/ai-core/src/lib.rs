@@ -84,7 +84,7 @@ pub trait InferenceProvider: Send + Sync {
     /// Stable slug matching `AIProfile.provider_kind` (e.g. `"ollama"`).
     fn kind(&self) -> &str;
 
-    /// Run one turn of inference.
+    /// Run one turn of inference. Waits for the full response.
     async fn complete(
         &self,
         req: ChatCompletionRequest,

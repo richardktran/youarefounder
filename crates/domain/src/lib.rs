@@ -1,3 +1,4 @@
+pub mod agent_run;
 pub mod ai_profile;
 pub mod company;
 pub mod hiring;
@@ -8,6 +9,7 @@ pub mod ticket;
 pub mod workspace;
 pub mod workspace_member;
 
+pub use agent_run::*;
 pub use ai_profile::*;
 pub use company::*;
 pub use hiring::*;

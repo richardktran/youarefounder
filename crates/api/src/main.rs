@@ -1,8 +1,10 @@
 mod config;
 mod embedded_postgres;
 mod error;
+mod job_events;
 mod routes;
 mod state;
+mod worker;
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -47,6 +49,13 @@ async fn main() -> Result<()> {
 
     // ── App state ─────────────────────────────────────────────────────────────
     let state = AppState::new(pool);
+
+    // ── Worker ─────────────────────────────────────────────────────────────────
+    worker::spawn(
+        state.pool.clone(),
+        state.providers.clone(),
+        state.events_tx.clone(),
+    );
 
     // ── Router ─────────────────────────────────────────────────────────────────
     let cors = CorsLayer::new()

@@ -1,3 +1,4 @@
+pub mod agent_run;
 pub mod ai_profile;
 pub mod company;
 pub mod hiring;

@@ -63,10 +63,15 @@ pg-embed = { version = "1.0.0", default-features = false, features = [
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
+    "stream",
 ] }
 
 # Async trait support
 async-trait = "0.1"
+
+# Async streams
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Utilities
 slug = "0.1"

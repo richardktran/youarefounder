@@ -1,3 +1,4 @@
+pub mod agent_jobs;
 pub mod ai_profiles;
 pub mod bootstrap;
 pub mod companies;
@@ -5,6 +6,7 @@ pub mod hiring;
 pub mod people;
 pub mod products;
 pub mod providers;
+pub mod simulation;
 pub mod tickets;
 pub mod workspace_members;
 pub mod workspaces;
@@ -36,6 +38,28 @@ pub fn v1_router() -> Router<AppState> {
         .route(
             "/companies/:id/complete-onboarding",
             axum::routing::post(companies::complete_onboarding),
+        )
+        // Simulation controls (Phase 4)
+        .route(
+            "/companies/:id/run",
+            axum::routing::post(simulation::run_company),
+        )
+        .route(
+            "/companies/:id/stop",
+            axum::routing::post(simulation::stop_company),
+        )
+        .route(
+            "/companies/:id/terminate",
+            axum::routing::post(simulation::terminate_company),
+        )
+        // Agent jobs
+        .route(
+            "/companies/:id/agent-jobs",
+            get(agent_jobs::list_agent_jobs),
+        )
+        .route(
+            "/agent-jobs/:job_id/stream",
+            get(agent_jobs::stream_job_events),
         )
         // Products (nested under company)
         .route(
@@ -118,6 +142,15 @@ pub fn v1_router() -> Router<AppState> {
         .route(
             "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/comments",
             get(tickets::list_comments).post(tickets::create_comment),
+        )
+        // Agent runs for a ticket (Phase 4)
+        .route(
+            "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/run-agent",
+            axum::routing::post(agent_jobs::enqueue_ticket_run),
+        )
+        .route(
+            "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/agent-runs",
+            get(agent_jobs::list_ticket_agent_runs),
         )
         // Workspace members (team permissions)
         .route(

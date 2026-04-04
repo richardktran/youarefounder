@@ -22,7 +22,6 @@ import {
   User,
   X,
   CheckCheck,
-  GripVertical,
 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -115,14 +114,12 @@ function TicketCardContent({
   companyId,
   workspaceId,
   people,
-  dragHandleProps,
   className,
 }: {
   ticket: Ticket;
   companyId: string;
   workspaceId: string;
   people: Person[];
-  dragHandleProps?: React.HTMLAttributes<HTMLButtonElement>;
   className?: string;
 }) {
   const priorityCfg = PRIORITY_CONFIG[ticket.priority];
@@ -133,13 +130,6 @@ function TicketCardContent({
   return (
     <div className={cn("rounded-lg border bg-zinc-900 p-3", className)}>
       <div className="flex items-start gap-2">
-        {/* Grip handle — drag starts here only */}
-        <button
-          {...dragHandleProps}
-          className="mt-0.5 shrink-0 cursor-grab active:cursor-grabbing text-zinc-700 hover:text-zinc-500 transition-colors touch-none"
-        >
-          <GripVertical className="h-3.5 w-3.5" />
-        </button>
         <Link
           href={`/app/${companyId}/workspaces/${workspaceId}/tickets/${ticket.id}`}
           className="flex-1 min-w-0"
@@ -206,13 +196,17 @@ function TicketCard({
   });
 
   return (
-    <div ref={setNodeRef} className={cn("transition-opacity", isDragging && "opacity-30")}>
+    <div
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
+      className={cn("cursor-grab active:cursor-grabbing touch-none transition-opacity", isDragging && "opacity-30")}
+    >
       <TicketCardContent
         ticket={ticket}
         companyId={companyId}
         workspaceId={workspaceId}
         people={people}
-        dragHandleProps={{ ...listeners, ...attributes } as React.HTMLAttributes<HTMLButtonElement>}
         className="border-zinc-800 hover:border-zinc-600 transition-colors"
       />
     </div>

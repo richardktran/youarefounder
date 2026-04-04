@@ -15,6 +15,8 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
+  GitBranch,
+  ArrowRight,
 } from "lucide-react";
 import {
   listPeople,
@@ -24,9 +26,12 @@ import {
   listAiProviders,
   createAiProfile,
   testConnection,
+  getOrgChart,
+  updateReportingLine,
   type Person,
   type PersonKind,
   type RoleType,
+  type OrgNode,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,10 +58,14 @@ const KIND_LABELS: Record<PersonKind, string> = {
   ai_agent: "AI Agent",
 };
 
+type TeamTab = "members" | "org-chart";
+
 export default function TeamPage() {
   const params = useParams<{ companyId: string }>();
   const companyId = params.companyId;
   const queryClient = useQueryClient();
+
+  const [activeTab, setActiveTab] = useState<TeamTab>("members");
 
   const [showForm, setShowForm] = useState(false);
   const [kind, setKind] = useState<PersonKind>("human_founder");
@@ -203,11 +212,43 @@ export default function TeamPage() {
             Your AI workforce — co-founders, executives, and specialists.
           </p>
         </div>
-        <Button size="sm" onClick={() => setShowForm((v) => !v)}>
-          <Plus className="h-4 w-4" />
-          Add member
-        </Button>
+        {activeTab === "members" && (
+          <Button size="sm" onClick={() => setShowForm((v) => !v)}>
+            <Plus className="h-4 w-4" />
+            Add member
+          </Button>
+        )}
       </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-zinc-800">
+        {([
+          { key: "members", label: "Members", icon: <Users className="h-3.5 w-3.5" /> },
+          { key: "org-chart", label: "Org chart", icon: <GitBranch className="h-3.5 w-3.5" /> },
+        ] as { key: TeamTab; label: string; icon: React.ReactNode }[]).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+              activeTab === t.key
+                ? "border-white text-white"
+                : "border-transparent text-zinc-500 hover:text-zinc-300"
+            )}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Org chart tab */}
+      {activeTab === "org-chart" && (
+        <OrgChartView companyId={companyId} people={people ?? []} />
+      )}
+
+      {/* Members tab content */}
+      {activeTab === "members" && <>
 
       {/* Add member form */}
       {showForm && (
@@ -501,6 +542,228 @@ export default function TeamPage() {
           )}
         </div>
       )}
+
+      </>}
+    </div>
+  );
+}
+
+// ─── Org Chart View ───────────────────────────────────────────────────────────
+
+function OrgChartView({
+  companyId,
+  people,
+}: {
+  companyId: string;
+  people: Person[];
+}) {
+  const queryClient = useQueryClient();
+
+  const { data: orgNodes, isLoading } = useQuery({
+    queryKey: ["org-chart", companyId],
+    queryFn: () => getOrgChart(companyId),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({
+      personId,
+      managerId,
+    }: {
+      personId: string;
+      managerId: string | null;
+    }) => updateReportingLine(companyId, personId, managerId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["org-chart", companyId] });
+      queryClient.invalidateQueries({ queryKey: ["people", companyId] });
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-12">
+        <Spinner />
+      </div>
+    );
+  }
+
+  const nodes = orgNodes ?? [];
+
+  if (nodes.length === 0) {
+    return (
+      <Card className="text-center py-12">
+        <GitBranch className="h-10 w-10 text-zinc-700 mx-auto mb-3" />
+        <p className="text-zinc-400 text-sm">No team members yet.</p>
+        <p className="text-zinc-600 text-xs mt-1">
+          Add team members in the Members tab first.
+        </p>
+      </Card>
+    );
+  }
+
+  // Build tree: roots are nodes with no manager (or unresolvable manager)
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const roots = nodes.filter(
+    (n) => !n.reports_to_person_id || !nodeMap.has(n.reports_to_person_id)
+  );
+
+  function getDirectReports(managerId: string): OrgNode[] {
+    return nodes.filter((n) => n.reports_to_person_id === managerId);
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-zinc-500">
+        Set reporting lines by choosing each person&apos;s manager below. The chart
+        stays acyclic — the API will reject changes that would create a loop.
+      </p>
+
+      {/* Flat list with manager pickers */}
+      <div className="space-y-2">
+        {nodes.map((node) => {
+          const isUpdating =
+            updateMutation.isPending &&
+            (updateMutation.variables as { personId: string })?.personId === node.id;
+          const managerNode = node.reports_to_person_id
+            ? nodeMap.get(node.reports_to_person_id)
+            : null;
+
+          return (
+            <Card key={node.id} className="p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={cn(
+                      "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
+                      node.kind === "ai_agent" ? "bg-blue-950" : "bg-zinc-800"
+                    )}
+                  >
+                    {node.kind === "ai_agent" ? (
+                      <Bot className="h-4 w-4 text-blue-400" />
+                    ) : (
+                      <User className="h-4 w-4 text-zinc-400" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-medium text-white truncate">
+                      {node.display_name}
+                    </p>
+                    <p className="text-xs text-zinc-500 truncate">
+                      {ROLE_LABELS[node.role_type as RoleType] ?? node.role_type}
+                      {node.specialty ? ` · ${node.specialty}` : ""}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Manager picker */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {managerNode && (
+                    <span className="text-xs text-zinc-500 flex items-center gap-1">
+                      <ArrowRight className="h-3 w-3" />
+                      {managerNode.display_name}
+                    </span>
+                  )}
+                  <div className="relative">
+                    <select
+                      disabled={isUpdating}
+                      value={node.reports_to_person_id ?? ""}
+                      onChange={(e) =>
+                        updateMutation.mutate({
+                          personId: node.id,
+                          managerId: e.target.value || null,
+                        })
+                      }
+                      className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-50"
+                    >
+                      <option value="">No manager (root)</option>
+                      {nodes
+                        .filter((n) => n.id !== node.id)
+                        .map((n) => (
+                          <option key={n.id} value={n.id}>
+                            {n.display_name}
+                          </option>
+                        ))}
+                    </select>
+                    {isUpdating && (
+                      <Spinner className="absolute right-6 top-1/2 -translate-y-1/2 h-3 w-3" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Tree view */}
+      {roots.length > 0 && (
+        <div className="mt-6">
+          <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">
+            Reporting tree
+          </p>
+          <div className="space-y-1">
+            {roots.map((root) => (
+              <OrgTreeNode
+                key={root.id}
+                node={root}
+                getReports={getDirectReports}
+                depth={0}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {updateMutation.isError && (
+        <p className="text-xs text-red-400 mt-2">
+          {String((updateMutation.error as Error)?.message ?? "Update failed")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function OrgTreeNode({
+  node,
+  getReports,
+  depth,
+}: {
+  node: OrgNode;
+  getReports: (id: string) => OrgNode[];
+  depth: number;
+}) {
+  const reports = getReports(node.id);
+
+  return (
+    <div style={{ paddingLeft: depth * 20 }}>
+      <div className="flex items-center gap-2 py-1">
+        {depth > 0 && (
+          <span className="text-zinc-700 select-none">└─</span>
+        )}
+        <div
+          className={cn(
+            "flex h-6 w-6 shrink-0 items-center justify-center rounded-full",
+            node.kind === "ai_agent" ? "bg-blue-950" : "bg-zinc-800"
+          )}
+        >
+          {node.kind === "ai_agent" ? (
+            <Bot className="h-3 w-3 text-blue-400" />
+          ) : (
+            <User className="h-3 w-3 text-zinc-400" />
+          )}
+        </div>
+        <span className="text-sm text-white">{node.display_name}</span>
+        <span className="text-xs text-zinc-600">
+          {ROLE_LABELS[node.role_type as RoleType] ?? node.role_type}
+        </span>
+      </div>
+      {reports.map((child) => (
+        <OrgTreeNode
+          key={child.id}
+          node={child}
+          getReports={getReports}
+          depth={depth + 1}
+        />
+      ))}
     </div>
   );
 }

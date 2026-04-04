@@ -1,6 +1,7 @@
 pub mod ai_profiles;
 pub mod bootstrap;
 pub mod companies;
+pub mod hiring;
 pub mod people;
 pub mod products;
 pub mod providers;
@@ -64,6 +65,32 @@ pub fn v1_router() -> Router<AppState> {
             get(people::get_person)
                 .patch(people::update_person)
                 .delete(people::delete_person),
+        )
+        .route(
+            "/companies/:id/people/:person_id/reporting-line",
+            axum::routing::patch(people::update_reporting_line),
+        )
+        // Org chart (Phase 3.5)
+        .route(
+            "/companies/:id/org-chart",
+            get(people::get_org_chart),
+        )
+        // Hiring proposals (Phase 3)
+        .route(
+            "/companies/:id/hiring-proposals",
+            get(hiring::list_proposals).post(hiring::create_proposal),
+        )
+        .route(
+            "/companies/:id/hiring-proposals/:proposal_id",
+            get(hiring::get_proposal),
+        )
+        .route(
+            "/companies/:id/hiring-proposals/:proposal_id/accept",
+            axum::routing::post(hiring::accept_proposal),
+        )
+        .route(
+            "/companies/:id/hiring-proposals/:proposal_id/decline",
+            axum::routing::post(hiring::decline_proposal),
         )
         // Workspaces (nested under company)
         .route(

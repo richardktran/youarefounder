@@ -1,5 +1,6 @@
 pub mod ai_profile;
 pub mod company;
+pub mod hiring;
 pub mod job;
 pub mod person;
 pub mod product;
@@ -9,6 +10,7 @@ pub mod workspace_member;
 
 pub use ai_profile::*;
 pub use company::*;
+pub use hiring::*;
 pub use job::*;
 pub use person::*;
 pub use product::*;

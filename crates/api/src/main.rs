@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     // Two paths:
     //   1. DATABASE_URL is set → use it (Docker Compose / developer mode).
     //   2. No DATABASE_URL → start embedded PostgreSQL.
-    let (database_url, _embedded) = resolve_database(&config).await?;
+    let (database_url, mut embedded) = resolve_database(&config).await?;
 
     let pool = db::connect(&database_url)
         .await
@@ -73,10 +73,39 @@ async fn main() -> Result<()> {
         .context("bind TCP listener")?;
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .context("serve")?;
 
+    if let Some(ref mut pg) = embedded {
+        pg.stop().await.ok();
+    }
+
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
 
 /// Returns `(database_url, embedded_handle)`.

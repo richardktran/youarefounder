@@ -67,6 +67,45 @@ export interface Person {
   role_type: RoleType;
   specialty: string | null;
   ai_profile_id: string | null;
+  /** Phase 3.5: nullable FK to the manager (reports_to_person_id). */
+  reports_to_person_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ─── Org chart ────────────────────────────────────────────────────────────────
+
+export interface OrgNode {
+  id: string;
+  display_name: string;
+  role_type: string;
+  specialty: string | null;
+  kind: string;
+  reports_to_person_id: string | null;
+}
+
+// ─── Hiring proposals ─────────────────────────────────────────────────────────
+
+export type ProposalStatus =
+  | "pending_founder"
+  | "accepted"
+  | "declined"
+  | "withdrawn";
+
+export interface HiringProposal {
+  id: string;
+  company_id: string;
+  proposed_by_person_id: string | null;
+  employee_display_name: string;
+  role_type: RoleType;
+  specialty: string | null;
+  ai_profile_id: string | null;
+  rationale: string | null;
+  scope_of_work: string | null;
+  status: ProposalStatus;
+  founder_response_text: string | null;
+  /** Populated after accept — the newly created Person id. */
+  created_person_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -486,6 +525,93 @@ export async function createComment(
   const { data } = await apiClient.post<TicketComment>(
     `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/comments`,
     input
+  );
+  return data;
+}
+
+// ─── Org chart ────────────────────────────────────────────────────────────────
+
+export async function getOrgChart(companyId: string): Promise<OrgNode[]> {
+  const { data } = await apiClient.get<OrgNode[]>(
+    `/companies/${companyId}/org-chart`
+  );
+  return data;
+}
+
+export async function updateReportingLine(
+  companyId: string,
+  personId: string,
+  reportsToPersonId: string | null
+): Promise<Person> {
+  const { data } = await apiClient.patch<Person>(
+    `/companies/${companyId}/people/${personId}/reporting-line`,
+    { reports_to_person_id: reportsToPersonId }
+  );
+  return data;
+}
+
+// ─── Hiring proposals ─────────────────────────────────────────────────────────
+
+export async function listHiringProposals(
+  companyId: string,
+  status?: ProposalStatus
+): Promise<HiringProposal[]> {
+  const { data } = await apiClient.get<HiringProposal[]>(
+    `/companies/${companyId}/hiring-proposals`,
+    { params: status ? { status } : undefined }
+  );
+  return data;
+}
+
+export async function getHiringProposal(
+  companyId: string,
+  proposalId: string
+): Promise<HiringProposal> {
+  const { data } = await apiClient.get<HiringProposal>(
+    `/companies/${companyId}/hiring-proposals/${proposalId}`
+  );
+  return data;
+}
+
+export async function createHiringProposal(
+  companyId: string,
+  input: {
+    employee_display_name: string;
+    role_type: RoleType;
+    specialty?: string;
+    ai_profile_id?: string;
+    rationale?: string;
+    scope_of_work?: string;
+    proposed_by_person_id?: string;
+  }
+): Promise<HiringProposal> {
+  const { data } = await apiClient.post<HiringProposal>(
+    `/companies/${companyId}/hiring-proposals`,
+    input
+  );
+  return data;
+}
+
+export async function acceptHiringProposal(
+  companyId: string,
+  proposalId: string,
+  founderNote?: string
+): Promise<HiringProposal> {
+  const { data } = await apiClient.post<HiringProposal>(
+    `/companies/${companyId}/hiring-proposals/${proposalId}/accept`,
+    founderNote ? { founder_response_text: founderNote } : {}
+  );
+  return data;
+}
+
+export async function declineHiringProposal(
+  companyId: string,
+  proposalId: string,
+  reason: string
+): Promise<HiringProposal> {
+  const { data } = await apiClient.post<HiringProposal>(
+    `/companies/${companyId}/hiring-proposals/${proposalId}/decline`,
+    { founder_response_text: reason }
   );
   return data;
 }

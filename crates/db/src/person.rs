@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use domain::{CreatePersonInput, Person, PersonKind, RoleType, UpdatePersonInput};
-use sqlx::{postgres::PgRow, PgPool, Row};
+use sqlx::{postgres::PgPool, PgPool as Pool, Row};
+use sqlx::postgres::PgRow;
 use uuid::Uuid;
 
 fn row_to_person(row: &PgRow) -> Person {
@@ -18,19 +19,22 @@ fn row_to_person(row: &PgRow) -> Person {
             .unwrap_or(RoleType::Specialist),
         specialty: row.get("specialty"),
         ai_profile_id: row.get("ai_profile_id"),
+        reports_to_person_id: row.get("reports_to_person_id"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
 }
 
+const SELECT_COLS: &str = "id, company_id, kind, display_name, role_type, specialty,
+                ai_profile_id, reports_to_person_id, created_at, updated_at";
+
 pub async fn list_people(pool: &PgPool, company_id: Uuid) -> Result<Vec<Person>> {
-    let rows = sqlx::query(
-        "SELECT id, company_id, kind, display_name, role_type, specialty,
-                ai_profile_id, created_at, updated_at
+    let rows = sqlx::query(&format!(
+        "SELECT {SELECT_COLS}
          FROM people
          WHERE company_id = $1
-         ORDER BY created_at ASC",
-    )
+         ORDER BY created_at ASC"
+    ))
     .bind(company_id)
     .fetch_all(pool)
     .await?;
@@ -43,12 +47,11 @@ pub async fn get_person(
     company_id: Uuid,
     person_id: Uuid,
 ) -> Result<Option<Person>> {
-    let row = sqlx::query(
-        "SELECT id, company_id, kind, display_name, role_type, specialty,
-                ai_profile_id, created_at, updated_at
+    let row = sqlx::query(&format!(
+        "SELECT {SELECT_COLS}
          FROM people
-         WHERE id = $1 AND company_id = $2",
-    )
+         WHERE id = $1 AND company_id = $2"
+    ))
     .bind(person_id)
     .bind(company_id)
     .fetch_optional(pool)
@@ -62,12 +65,11 @@ pub async fn create_person(
     company_id: Uuid,
     input: CreatePersonInput,
 ) -> Result<Person> {
-    let row = sqlx::query(
+    let row = sqlx::query(&format!(
         "INSERT INTO people (company_id, kind, display_name, role_type, specialty, ai_profile_id)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, company_id, kind, display_name, role_type, specialty,
-                   ai_profile_id, created_at, updated_at",
-    )
+         RETURNING {SELECT_COLS}"
+    ))
     .bind(company_id)
     .bind(input.kind.to_string())
     .bind(&input.display_name)
@@ -81,22 +83,22 @@ pub async fn create_person(
 }
 
 pub async fn update_person(
-    pool: &PgPool,
+    pool: &Pool,
     company_id: Uuid,
     person_id: Uuid,
     input: UpdatePersonInput,
 ) -> Result<Option<Person>> {
-    let row = sqlx::query(
+    let row = sqlx::query(&format!(
         "UPDATE people
-         SET display_name  = COALESCE($3, display_name),
-             role_type     = COALESCE($4, role_type),
-             specialty     = CASE WHEN $5 THEN $6 ELSE specialty END,
-             ai_profile_id = CASE WHEN $7 THEN $8 ELSE ai_profile_id END,
-             updated_at    = NOW()
+         SET display_name          = COALESCE($3, display_name),
+             role_type             = COALESCE($4, role_type),
+             specialty             = CASE WHEN $5 THEN $6 ELSE specialty END,
+             ai_profile_id        = CASE WHEN $7 THEN $8 ELSE ai_profile_id END,
+             reports_to_person_id = CASE WHEN $9 THEN $10 ELSE reports_to_person_id END,
+             updated_at            = NOW()
          WHERE id = $1 AND company_id = $2
-         RETURNING id, company_id, kind, display_name, role_type, specialty,
-                   ai_profile_id, created_at, updated_at",
-    )
+         RETURNING {SELECT_COLS}"
+    ))
     .bind(person_id)
     .bind(company_id)
     .bind(input.display_name.as_deref())
@@ -105,6 +107,8 @@ pub async fn update_person(
     .bind(input.specialty.flatten().as_deref())
     .bind(input.ai_profile_id.is_some())
     .bind(input.ai_profile_id.flatten())
+    .bind(input.reports_to_person_id.is_some())
+    .bind(input.reports_to_person_id.flatten())
     .fetch_optional(pool)
     .await?;
 
@@ -133,7 +137,6 @@ pub async fn seed_founder(
     company_id: Uuid,
     display_name: &str,
 ) -> Result<Person> {
-    // Try to insert; if the founder already exists (by company + kind), do nothing.
     sqlx::query(
         "INSERT INTO people (company_id, kind, display_name, role_type)
          VALUES ($1, 'human_founder', $2, 'co_founder')
@@ -144,17 +147,86 @@ pub async fn seed_founder(
     .execute(pool)
     .await?;
 
-    // Fetch (always succeeds after upsert above).
-    let row = sqlx::query(
-        "SELECT id, company_id, kind, display_name, role_type, specialty,
-                ai_profile_id, created_at, updated_at
+    let row = sqlx::query(&format!(
+        "SELECT {SELECT_COLS}
          FROM people
          WHERE company_id = $1 AND kind = 'human_founder'
-         LIMIT 1",
-    )
+         LIMIT 1"
+    ))
     .bind(company_id)
     .fetch_one(pool)
     .await?;
+
+    Ok(row_to_person(&row))
+}
+
+/// Update the `reports_to_person_id` for a person with cycle detection.
+///
+/// Pass `new_manager_id = None` to clear the reporting line (make root).
+/// Returns an error if the update would create a cycle.
+pub async fn update_reporting_line(
+    pool: &PgPool,
+    company_id: Uuid,
+    person_id: Uuid,
+    new_manager_id: Option<Uuid>,
+) -> Result<Person> {
+    if let Some(manager_id) = new_manager_id {
+        if manager_id == person_id {
+            return Err(anyhow!("a person cannot report to themselves"));
+        }
+
+        // Cycle check: walk UP from new_manager_id; if we encounter person_id, it's a cycle.
+        let would_cycle: bool = sqlx::query_scalar(
+            "WITH RECURSIVE upchain AS (
+                SELECT id, reports_to_person_id
+                FROM people
+                WHERE id = $1 AND company_id = $3
+                UNION ALL
+                SELECT p.id, p.reports_to_person_id
+                FROM people p
+                JOIN upchain u ON p.id = u.reports_to_person_id
+                WHERE u.reports_to_person_id IS NOT NULL
+            )
+            SELECT EXISTS(SELECT 1 FROM upchain WHERE id = $2)",
+        )
+        .bind(manager_id)
+        .bind(person_id)
+        .bind(company_id)
+        .fetch_one(pool)
+        .await?;
+
+        if would_cycle {
+            return Err(anyhow!(
+                "setting this manager would create a reporting cycle"
+            ));
+        }
+
+        // Verify manager belongs to the same company
+        let manager_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM people WHERE id = $1 AND company_id = $2)",
+        )
+        .bind(manager_id)
+        .bind(company_id)
+        .fetch_one(pool)
+        .await?;
+
+        if !manager_exists {
+            return Err(anyhow!("manager not found in this company"));
+        }
+    }
+
+    let row = sqlx::query(&format!(
+        "UPDATE people
+         SET reports_to_person_id = $3, updated_at = NOW()
+         WHERE id = $1 AND company_id = $2
+         RETURNING {SELECT_COLS}"
+    ))
+    .bind(person_id)
+    .bind(company_id)
+    .bind(new_manager_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow!("person not found"))?;
 
     Ok(row_to_person(&row))
 }

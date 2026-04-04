@@ -12,7 +12,7 @@ The **minimum lovable product** is a **working company simulation** without Git 
 2. Use **workspaces and tickets** as the single place work lives—including **hiring work** (e.g. tickets titled “Hire CEO”, “Hire CTO”, “Hire engineer”).
 3. **Hiring & contracts:** every new AI hire is a **pending contract** the founder **accepts or declines**; on accept, a new `Person` (and optional **role**: CEO, CTO, IC) exists and can be **assigned**.
 4. **Organization chart:** each person has a **reporting line** (who works under whom); the founder can **see and edit** the tree before automation leans on it.
-5. **Agent loop:** the **worker** runs **assignees** on tickets (starting with the co-founder): JSON actions update tickets, add comments, and emit **`propose_hire`** into the contract pipeline—so the co-founder can **execute** “hire CEO/CTO” tickets; once those people exist, they can be **assignees** on further hiring tickets (e.g. CEO runs “Hire another role”). The agent **context pack** includes **manager / direct reports** from Phase 3.5.
+5. **Agent loop:** with the business in **Run**, the **worker** runs **assignees** on tickets (starting with the **co-founder**). The co-founder **thinks aloud in the product**: they **plan what to do** and, when they need the human founder, **ask questions in tickets**—goals, how to start, whether to hire, priorities—then **wait** (no further agent moves that depend on those answers until the founder has **responded** in the ticket thread or cleared a **blocked / awaiting founder** state). After the founder answers, the next runs **continue the process**: **create tickets**, **`propose_hire`**, update work, and so on. JSON actions still update tickets, add comments, and emit **`propose_hire`** into the contract pipeline; once new people exist, they can be **assignees** on further tickets (e.g. CEO runs “Hire another role”). The agent **context pack** includes **manager / direct reports** from Phase 3.5.
 6. **CEO / CTO layer:** role-specific prompts, **scheduler**, and policies so executives **pick up** tickets (including hiring) on a cadence—**after** people, **org structure**, and contracts exist and the agent loop works.
 
 **Not in MVP:** private Git repos, **pgvector**, indexer jobs, or **RAG** in the context pack. Those ship in **Phase 9** so the agent loop **does not depend** on a repo index. The context pack for MVP is **tickets, people, company, thread, reporting hierarchy**—enough to hire, **organize**, and execute work.
@@ -90,9 +90,14 @@ The **minimum lovable product** is a **working company simulation** without Git 
 - `agent_jobs` queue; worker binary; inference via **provider registry** (Ollama only enabled).
 - **Context pack (MVP):** company, workspace, ticket, thread, **people list**, **manager and direct reports** (from Phase 3.5)—**no** `knowledge_chunk` / RAG (that is Phase 9).
 - JSON **action schema**; transactional apply; **`propose_hire`** produces pending contracts aligned with Phase 3.
-- Agent run history visible on ticket; manual **run / batch** from UI.
+- Agent run history visible on ticket; optional **per-ticket** manual run or batch where useful.
+- **Co-founder bootstrap dialogue (tickets as the inbox):** when the business is in **Run**, the co-founder’s runs are guided to **reflect on what to do next** and, when information only the human has (vision, goals, appetite to hire, constraints), to **capture that as work in tickets**—e.g. create or update tickets whose **title/description/comments** pose clear questions, or split **“question for founder”** tickets from **execution** tickets. The worker enforces **wait-for-founder**: while a ticket (or dependency chain) is **blocked on founder input**, the co-founder does **not** take autonomous steps that **assume** those answers (no hiring spree, no large ticket batch) until the founder has **answered** (e.g. **comment on the ticket**, or a dedicated **awaiting founder → answered** transition—pick one convention and surface it in UI). After the answer is visible in context, **subsequent** runs may **`create_ticket`**, **`propose_hire`**, reassign, and continue the simulation.
+- **Company simulation controls (UI + backend state):** three explicit actions so the founder governs the whole business, not only a single ticket:
+  - **Run** — **start or resume** the business: the worker **may** dequeue and execute agent work (assignee runs, job processing). When the business is not running, agents do no work.
+  - **Stop** — **pause** the business **without** destroying data: halt all agent activity (no new runs; cancel or leave queued jobs **blocked** until Run—pick one consistent policy and document it). Tickets, people, contracts, and settings remain intact.
+  - **Terminate** — **end the company simulation** and **remove company-scoped profile and data** (company, people, tickets, jobs, contracts, AI profiles tied to that company, etc.) via **cascading delete** or equivalent; **irreversible**. UI must require **explicit confirmation** (e.g. type company name) so it is never mistaken for Stop.
 
-**Exit criteria:** Assign a ticket (e.g. “Hire CEO”) to the **co-founder**, run the agent; model updates ticket/comments and can **submit a hire proposal**; founder completes the contract in the inbox; **new person can be assignee** on the next ticket. Repeat for CEO-driven hiring tickets once Phase 5 exists. Agent prompts can rely on **org context** from Phase 3.5.
+**Exit criteria:** With the business in **Run**, the **co-founder** produces a **credible bootstrap arc**: asks the founder **at least one** concrete question **via tickets** (goals, hiring, or how to start), enters a **wait** state until the founder **responds in-thread** (or your chosen “answered” signal); after that, a further run **creates follow-on tickets** and/or **`propose_hire`** as appropriate; the founder completes any contract in the inbox so a **new person can be assignee** on a later ticket. **Stop** leaves data in place and prevents agent work until **Run** again. **Terminate** removes the company and associated data per policy above. Repeat for CEO-driven hiring tickets once Phase 5 exists. Agent prompts can rely on **org context** from Phase 3.5.
 
 ---
 
@@ -111,7 +116,7 @@ The **minimum lovable product** is a **working company simulation** without Git 
 
 **Deliverables**
 
-- `DecisionRequest` entity + APIs + UI.
+- `DecisionRequest` entity + APIs + UI (extends the **Phase 4** pattern of **founder answers unlocking work**, with a **structured** decision record and optional dedicated inbox view).
 - Blocking semantics on tickets; scheduler respects blocks.
 
 **Exit criteria:** Escalated decision blocks work; founder answer unblocks the ticket.
@@ -176,4 +181,4 @@ The **minimum lovable product** is a **working company simulation** without Git 
 
 ## Definition of “done” for v1 (Phases 0–8)
 
-Founder completes **onboarding** with **AI + co-founder**; **tickets** drive work including **hiring CEO/CTO and beyond**; **contracts** gate every hire; an **organization chart** (Phase 3.5) records **who reports to whom**; the **agent loop** executes ticket work and **`propose_hire`** with **org-aware** context; **CEO/CTO** run on a **schedule** with role prompts; optional **decisions** inbox and **autonomous expansion** per phases 6–7. **Inference is Ollama-first**; architecture stays multi-provider–ready. **Phase 9** adds Git + RAG; **Phase 10** adds cloud LLMs.
+Founder completes **onboarding** with **AI + co-founder**; **tickets** drive work including **hiring CEO/CTO and beyond**; the co-founder **asks and waits on the founder in tickets** before major execution, then **continues** after answers; **contracts** gate every hire; an **organization chart** (Phase 3.5) records **who reports to whom**; the **agent loop** executes ticket work and **`propose_hire`** with **org-aware** context; **CEO/CTO** run on a **schedule** with role prompts; optional **decisions** inbox and **autonomous expansion** per phases 6–7. **Inference is Ollama-first**; architecture stays multi-provider–ready. **Phase 9** adds Git + RAG; **Phase 10** adds cloud LLMs.

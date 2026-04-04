@@ -17,7 +17,7 @@ This document **designs how implementation phases fit together**: dependencies, 
 | **2** | Workspaces & tickets | CRUD + UI; hiring work modeled as tickets |
 | **3** | Hiring & contracts | Proposals, founder accept/decline, roles (CEO/CTO/…), new `Person` |
 | **3.5** | **Organization chart** | Reporting lines (manager / reports); tree UI; cycle-safe APIs |
-| **4** | Agent loop | Worker, JSON actions, **`propose_hire`**, MVP context pack + **org** (no RAG) |
+| **4** | Agent loop | Worker, JSON actions, **`propose_hire`**, MVP context pack + **org** (no RAG); **Run / Stop / Terminate**; co-founder **Q&A in tickets**, **wait for founder**, then **continue** |
 | **5** | CEO & CTO + scheduler | Role prompts, autonomous ticks, executives on hiring tickets |
 | **6** | Decisions inbox | Escalations, blocking tickets |
 | **7** | Autonomous expansion | Policies, workspace/ticket expansion, activity feed, rate limits |
@@ -59,7 +59,7 @@ flowchart TD
 | **2** | Workspace + ticket + comment + status + assignee path (as far as people exist) | **3** |
 | **3** | Accept hire → new `Person` with role; CEO/CTO can exist via contracts | **3.5** |
 | **3.5** | Org chart + reporting lines editable; acyclic graph | **4** |
-| **4** | Agent run mutates ticket; `propose_hire` creates pending contract | **5** |
+| **4** | Agent run mutates ticket; `propose_hire` creates pending contract; co-founder can **ask in tickets**, **wait** for founder reply, then **continue**; **Run/Stop/Terminate** behave as specified (pause vs wipe) | **5** |
 | **5** | Scheduler runs; CEO/CTO advance tickets in demo | **6** |
 | **6** | Decision blocks / unblock | **7** |
 | **7** | Expansion policies + feed demonstrable | **8** |

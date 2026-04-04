@@ -1,5 +1,6 @@
 pub mod ai_profile;
 pub mod company;
+pub mod hiring;
 pub mod job;
 pub mod person;
 pub mod product;

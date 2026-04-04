@@ -71,6 +71,8 @@ pub struct Person {
     pub role_type: RoleType,
     pub specialty: Option<String>,
     pub ai_profile_id: Option<Uuid>,
+    /// Phase 3.5: org chart — nullable FK to the person this person reports to.
+    pub reports_to_person_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -92,4 +94,6 @@ pub struct UpdatePersonInput {
     pub specialty: Option<Option<String>>,
     /// None = don't change; Some(None) = clear; Some(Some(id)) = set
     pub ai_profile_id: Option<Option<Uuid>>,
+    /// None = don't change; Some(None) = clear manager; Some(Some(id)) = set manager
+    pub reports_to_person_id: Option<Option<Uuid>>,
 }

@@ -100,7 +100,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Phase badge */}
         <div className="px-4 py-4 border-t border-zinc-800">
           <div className="rounded-lg bg-zinc-900 px-3 py-2 text-xs text-zinc-500">
-            Phase 1–2 · Team & Workspaces
+            Phase 3–3.5 · Hiring & Org chart
           </div>
         </div>
       </aside>

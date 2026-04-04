@@ -69,10 +69,12 @@ impl EmbeddedPostgres {
         pg.setup().await.context("pg_embed setup")?;
         pg.start_db().await.context("pg_embed start")?;
 
-        // create_database is idempotent — safe to call every time.
-        pg.create_database(DB_NAME)
-            .await
-            .context("create yaf database")?;
+        // create_database is not truly idempotent; ignore "already exists".
+        match pg.create_database(DB_NAME).await {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("already exists") => {}
+            Err(e) => return Err(e).context("create yaf database"),
+        }
 
         let database_url = pg.full_db_uri(DB_NAME);
         info!(%database_url, "embedded PostgreSQL ready");
@@ -80,7 +82,6 @@ impl EmbeddedPostgres {
         Ok(Self { pg, database_url })
     }
 
-    #[allow(dead_code)]
     pub async fn stop(&mut self) -> Result<()> {
         warn!("stopping embedded PostgreSQL");
         self.pg.stop_db().await.context("stop embedded postgres")?;

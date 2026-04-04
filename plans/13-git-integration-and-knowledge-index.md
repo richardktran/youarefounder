@@ -8,6 +8,8 @@
 
 This doc complements [02-domain-model.md](./02-domain-model.md), [05-ai-runtime.md](./05-ai-runtime.md), and [09-security-and-compliance.md](./09-security-and-compliance.md).
 
+**Implementation schedule:** Git + index + RAG land in **Phase 9** (after v1); the MVP agent loop does not depend on this—see [10-implementation-phases.md](./10-implementation-phases.md).
+
 ## Git host abstraction (extensible)
 
 | `git_host_kind` | First implementation | Notes |

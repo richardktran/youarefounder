@@ -4,7 +4,7 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Package, Users, FolderKanban, Inbox, ArrowRight } from "lucide-react";
 import Link from "next/link";
-import { getCompany, listProducts } from "@/lib/api";
+import { getCompany, listProducts, listWorkspaces, listPeople } from "@/lib/api";
 import { Spinner } from "@/components/ui/spinner";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -39,6 +39,16 @@ export default function CompanyOverview() {
     queryFn: () => listProducts(companyId),
   });
 
+  const { data: workspaces } = useQuery({
+    queryKey: ["workspaces", companyId],
+    queryFn: () => listWorkspaces(companyId),
+  });
+
+  const { data: people } = useQuery({
+    queryKey: ["people", companyId],
+    queryFn: () => listPeople(companyId),
+  });
+
   if (companyLoading) {
     return (
       <div className="flex h-full items-center justify-center p-12">
@@ -51,19 +61,19 @@ export default function CompanyOverview() {
 
   const upcomingPhases = [
     {
-      phase: "Phase 1",
-      title: "Onboarding + Ollama",
-      description: "AI co-founder, model config, and test connection.",
-    },
-    {
-      phase: "Phase 2",
-      title: "Workspaces & Tickets",
-      description: "Jira-lite CRUD — tickets, comments, status flows.",
+      phase: "Phase 2.5",
+      title: "Git + Knowledge index",
+      description: "PAT, private org repos, pgvector, and indexer jobs.",
     },
     {
       phase: "Phase 3",
       title: "First agent loop",
       description: "Worker picks tickets, calls LLM, writes actions back.",
+    },
+    {
+      phase: "Phase 4",
+      title: "CEO & CTO + scheduler",
+      description: "Hiring flows, role prompts, autonomy tick, and cross-role progress.",
     },
   ];
 
@@ -86,16 +96,14 @@ export default function CompanyOverview() {
         <StatCard
           icon={<FolderKanban className="h-5 w-5" />}
           label="Workspaces"
-          value="0"
+          value={workspaces ? String(workspaces.length) : "…"}
           href={`/app/${companyId}/workspaces`}
-          dimmed
         />
         <StatCard
           icon={<Users className="h-5 w-5" />}
           label="Team members"
-          value="0"
+          value={people ? String(people.length) : "…"}
           href={`/app/${companyId}/team`}
-          dimmed
         />
         <StatCard
           icon={<Inbox className="h-5 w-5" />}

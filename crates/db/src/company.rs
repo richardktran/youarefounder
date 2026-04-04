@@ -3,6 +3,8 @@ use domain::{BootstrapStatus, Company, CreateCompanyInput, UpdateCompanyInput};
 use sqlx::{postgres::PgRow, PgPool, Row};
 use uuid::Uuid;
 
+use crate::workspace;
+
 fn row_to_company(row: &PgRow) -> Company {
     Company {
         id: row.get("id"),
@@ -94,6 +96,8 @@ pub async fn create_company(pool: &PgPool, input: CreateCompanyInput) -> Result<
         .execute(&mut *tx)
         .await?;
     }
+
+    workspace::seed_default_workspaces(&mut tx, company.id).await?;
 
     tx.commit().await?;
     Ok(company)

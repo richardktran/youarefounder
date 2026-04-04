@@ -3,6 +3,9 @@ pub mod company;
 pub mod job;
 pub mod person;
 pub mod product;
+pub mod ticket;
+pub mod workspace;
+pub mod workspace_member;
 
 use anyhow::Result;
 use sqlx::PgPool;

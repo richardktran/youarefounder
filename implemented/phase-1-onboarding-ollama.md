@@ -4,7 +4,7 @@ Reference: [plans/10-implementation-phases.md](../plans/10-implementation-phases
 
 ## Summary
 
-Onboarding now includes **company, product, and AI setup** (Ollama only in the product). The backend stores **`AIProfile`** rows (`provider_kind`, `model_id`, **`provider_config` JSONB**), exposes **provider metadata** and **test connection**, and creates an **AI co-founder `Person`** linked to that profile. Inference is abstracted behind **`InferenceProvider`** with a **registry** and an **Ollama** adapter. **Git** is intentionally not in this phase (planned for Phase 2.5).
+Onboarding now includes **company, product, and AI setup** (Ollama only in the product). The backend stores **`AIProfile`** rows (`provider_kind`, `model_id`, **`provider_config` JSONB**), exposes **provider metadata** and **test connection**, and creates an **AI co-founder `Person`** linked to that profile. Inference is abstracted behind **`InferenceProvider`** with a **registry** and an **Ollama** adapter. **Git** is intentionally not in this phase (planned for **Phase 9** in [10-implementation-phases.md](../plans/10-implementation-phases.md)—post–MVP).
 
 ## Deliverables (as implemented)
 
@@ -59,9 +59,9 @@ Onboarding now includes **company, product, and AI setup** (Ollama only in the p
 | Fresh user completes onboarding | Wizard + API sequence creates company, product, profile, co-founder person, then completes onboarding. |
 | Test connection works against local Ollama | Health check hits Ollama `/api/tags` via registry-built adapter. |
 | Adding a vendor later is adapter + enable-list, not a redesign | Trait + registry + JSONB `provider_config`; new kind = new adapter + registry arm + provider list entry. |
-| Git + index | **Not in Phase 1** — tracked in Phase 2.5 per plan. |
+| Git + index | **Not in Phase 1** — tracked in Phase 9 per plan. |
 
 ## Intentional deferrals
 
-- **Git onboarding, PAT, org, indexing, pgvector** — Phase 2.5.
-- **Cloud LLM providers in the enable-list** — Phase 9+; schema and trait are ready for extension.
+- **Git onboarding, PAT, org, indexing, pgvector** — Phase 9.
+- **Cloud LLM providers in the enable-list** — Phase 10+; schema and trait are ready for extension.

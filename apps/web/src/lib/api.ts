@@ -234,3 +234,258 @@ export async function createPerson(
   );
   return data;
 }
+
+export async function updatePerson(
+  companyId: string,
+  personId: string,
+  input: Partial<{
+    display_name: string;
+    role_type: RoleType;
+    specialty: string | null;
+    ai_profile_id: string | null;
+  }>
+): Promise<Person> {
+  const { data } = await apiClient.patch<Person>(
+    `/companies/${companyId}/people/${personId}`,
+    input
+  );
+  return data;
+}
+
+export async function deletePerson(
+  companyId: string,
+  personId: string
+): Promise<void> {
+  await apiClient.delete(`/companies/${companyId}/people/${personId}`);
+}
+
+// ─── Workspace Members ────────────────────────────────────────────────────────
+
+export type WorkspaceMemberRole = "member" | "lead";
+
+export interface WorkspaceMember {
+  id: string;
+  workspace_id: string;
+  person_id: string;
+  role: WorkspaceMemberRole;
+  created_at: string;
+  display_name: string;
+  person_kind: PersonKind;
+  role_type: string;
+  specialty: string | null;
+  ai_profile_id: string | null;
+}
+
+export async function listWorkspaceMembers(
+  companyId: string,
+  workspaceId: string
+): Promise<WorkspaceMember[]> {
+  const { data } = await apiClient.get<WorkspaceMember[]>(
+    `/companies/${companyId}/workspaces/${workspaceId}/members`
+  );
+  return data;
+}
+
+export async function addWorkspaceMember(
+  companyId: string,
+  workspaceId: string,
+  input: { person_id: string; role?: WorkspaceMemberRole }
+): Promise<WorkspaceMember> {
+  const { data } = await apiClient.post<WorkspaceMember>(
+    `/companies/${companyId}/workspaces/${workspaceId}/members`,
+    input
+  );
+  return data;
+}
+
+export async function removeWorkspaceMember(
+  companyId: string,
+  workspaceId: string,
+  personId: string
+): Promise<void> {
+  await apiClient.delete(
+    `/companies/${companyId}/workspaces/${workspaceId}/members/${personId}`
+  );
+}
+
+// ─── Workspaces ───────────────────────────────────────────────────────────────
+
+export interface Workspace {
+  id: string;
+  company_id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listWorkspaces(companyId: string): Promise<Workspace[]> {
+  const { data } = await apiClient.get<Workspace[]>(
+    `/companies/${companyId}/workspaces`
+  );
+  return data;
+}
+
+export async function getWorkspace(
+  companyId: string,
+  workspaceId: string
+): Promise<Workspace> {
+  const { data } = await apiClient.get<Workspace>(
+    `/companies/${companyId}/workspaces/${workspaceId}`
+  );
+  return data;
+}
+
+export async function createWorkspace(
+  companyId: string,
+  input: { name: string; slug?: string; description?: string }
+): Promise<Workspace> {
+  const { data } = await apiClient.post<Workspace>(
+    `/companies/${companyId}/workspaces`,
+    input
+  );
+  return data;
+}
+
+export async function updateWorkspace(
+  companyId: string,
+  workspaceId: string,
+  input: Partial<{ name: string; description: string }>
+): Promise<Workspace> {
+  const { data } = await apiClient.patch<Workspace>(
+    `/companies/${companyId}/workspaces/${workspaceId}`,
+    input
+  );
+  return data;
+}
+
+export async function deleteWorkspace(
+  companyId: string,
+  workspaceId: string
+): Promise<void> {
+  await apiClient.delete(
+    `/companies/${companyId}/workspaces/${workspaceId}`
+  );
+}
+
+// ─── Tickets ──────────────────────────────────────────────────────────────────
+
+export type TicketStatus =
+  | "backlog"
+  | "todo"
+  | "in_progress"
+  | "blocked"
+  | "done"
+  | "cancelled";
+
+export type TicketType = "task" | "epic" | "research";
+export type TicketPriority = "low" | "medium" | "high";
+
+export interface Ticket {
+  id: string;
+  workspace_id: string;
+  title: string;
+  description: string | null;
+  ticket_type: TicketType;
+  status: TicketStatus;
+  priority: TicketPriority;
+  assignee_person_id: string | null;
+  parent_ticket_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TicketComment {
+  id: string;
+  ticket_id: string;
+  body: string;
+  author_person_id: string | null;
+  created_at: string;
+}
+
+export async function listTickets(
+  companyId: string,
+  workspaceId: string
+): Promise<Ticket[]> {
+  const { data } = await apiClient.get<Ticket[]>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets`
+  );
+  return data;
+}
+
+export async function getTicket(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string
+): Promise<Ticket> {
+  const { data } = await apiClient.get<Ticket>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}`
+  );
+  return data;
+}
+
+export async function createTicket(
+  companyId: string,
+  workspaceId: string,
+  input: {
+    title: string;
+    description?: string;
+    ticket_type?: TicketType;
+    status?: TicketStatus;
+    priority?: TicketPriority;
+    assignee_person_id?: string;
+    parent_ticket_id?: string;
+  }
+): Promise<Ticket> {
+  const { data } = await apiClient.post<Ticket>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets`,
+    input
+  );
+  return data;
+}
+
+export async function updateTicket(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string,
+  input: Partial<{
+    title: string;
+    description: string;
+    ticket_type: TicketType;
+    status: TicketStatus;
+    priority: TicketPriority;
+    assignee_person_id: string | null;
+    parent_ticket_id: string | null;
+  }>
+): Promise<Ticket> {
+  const { data } = await apiClient.patch<Ticket>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}`,
+    input
+  );
+  return data;
+}
+
+export async function listComments(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string
+): Promise<TicketComment[]> {
+  const { data } = await apiClient.get<TicketComment[]>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/comments`
+  );
+  return data;
+}
+
+export async function createComment(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string,
+  input: { body: string; author_person_id?: string }
+): Promise<TicketComment> {
+  const { data } = await apiClient.post<TicketComment>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/comments`,
+    input
+  );
+  return data;
+}

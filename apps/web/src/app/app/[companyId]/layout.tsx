@@ -57,7 +57,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const items = navItems(companyId);
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside className="w-60 shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col">
         {/* Brand */}
@@ -100,13 +100,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Phase badge */}
         <div className="px-4 py-4 border-t border-zinc-800">
           <div className="rounded-lg bg-zinc-900 px-3 py-2 text-xs text-zinc-500">
-            Phase 0 · Foundations
+            Phase 1–2 · Team & Workspaces
           </div>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">{children}</main>
+      <main className="flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
     </div>
   );
 }

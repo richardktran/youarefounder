@@ -3,9 +3,15 @@ pub mod company;
 pub mod job;
 pub mod person;
 pub mod product;
+pub mod ticket;
+pub mod workspace;
+pub mod workspace_member;
 
 pub use ai_profile::*;
 pub use company::*;
 pub use job::*;
 pub use person::*;
 pub use product::*;
+pub use ticket::*;
+pub use workspace::*;
+pub use workspace_member::*;

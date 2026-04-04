@@ -1,5 +1,5 @@
 use anyhow::Result;
-use domain::{CreatePersonInput, Person, PersonKind, RoleType};
+use domain::{CreatePersonInput, Person, PersonKind, RoleType, UpdatePersonInput};
 use sqlx::{postgres::PgRow, PgPool, Row};
 use uuid::Uuid;
 
@@ -78,6 +78,53 @@ pub async fn create_person(
     .await?;
 
     Ok(row_to_person(&row))
+}
+
+pub async fn update_person(
+    pool: &PgPool,
+    company_id: Uuid,
+    person_id: Uuid,
+    input: UpdatePersonInput,
+) -> Result<Option<Person>> {
+    let row = sqlx::query(
+        "UPDATE people
+         SET display_name  = COALESCE($3, display_name),
+             role_type     = COALESCE($4, role_type),
+             specialty     = CASE WHEN $5 THEN $6 ELSE specialty END,
+             ai_profile_id = CASE WHEN $7 THEN $8 ELSE ai_profile_id END,
+             updated_at    = NOW()
+         WHERE id = $1 AND company_id = $2
+         RETURNING id, company_id, kind, display_name, role_type, specialty,
+                   ai_profile_id, created_at, updated_at",
+    )
+    .bind(person_id)
+    .bind(company_id)
+    .bind(input.display_name.as_deref())
+    .bind(input.role_type.as_ref().map(|r| r.to_string()))
+    .bind(input.specialty.is_some())
+    .bind(input.specialty.flatten().as_deref())
+    .bind(input.ai_profile_id.is_some())
+    .bind(input.ai_profile_id.flatten())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(row_to_person))
+}
+
+pub async fn delete_person(
+    pool: &PgPool,
+    company_id: Uuid,
+    person_id: Uuid,
+) -> Result<bool> {
+    let res = sqlx::query(
+        "DELETE FROM people WHERE id = $1 AND company_id = $2",
+    )
+    .bind(person_id)
+    .bind(company_id)
+    .execute(pool)
+    .await?;
+
+    Ok(res.rows_affected() > 0)
 }
 
 /// Seed the human founder row. Idempotent — skips if already exists.

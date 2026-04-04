@@ -4,6 +4,9 @@ pub mod companies;
 pub mod people;
 pub mod products;
 pub mod providers;
+pub mod tickets;
+pub mod workspace_members;
+pub mod workspaces;
 
 use axum::{routing::get, Router};
 
@@ -15,10 +18,7 @@ pub fn v1_router() -> Router<AppState> {
         // System
         .route("/bootstrap", get(bootstrap::get_bootstrap))
         // AI providers meta (Phase 1: Ollama only)
-        .route(
-            "/ai-providers",
-            get(providers::list_providers),
-        )
+        .route("/ai-providers", get(providers::list_providers))
         .route(
             "/ai-providers/test-connection",
             axum::routing::post(providers::test_connection),
@@ -61,6 +61,45 @@ pub fn v1_router() -> Router<AppState> {
         )
         .route(
             "/companies/:id/people/:person_id",
-            get(people::get_person),
+            get(people::get_person)
+                .patch(people::update_person)
+                .delete(people::delete_person),
+        )
+        // Workspaces (nested under company)
+        .route(
+            "/companies/:id/workspaces",
+            get(workspaces::list_workspaces).post(workspaces::create_workspace),
+        )
+        .route(
+            "/companies/:id/workspaces/:workspace_id",
+            get(workspaces::get_workspace)
+                .patch(workspaces::update_workspace)
+                .delete(workspaces::delete_workspace),
+        )
+        // Tickets (nested under workspace)
+        .route(
+            "/companies/:id/workspaces/:workspace_id/tickets",
+            get(tickets::list_tickets).post(tickets::create_ticket),
+        )
+        .route(
+            "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id",
+            get(tickets::get_ticket)
+                .patch(tickets::update_ticket)
+                .delete(tickets::delete_ticket),
+        )
+        // Comments (nested under ticket)
+        .route(
+            "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/comments",
+            get(tickets::list_comments).post(tickets::create_comment),
+        )
+        // Workspace members (team permissions)
+        .route(
+            "/companies/:id/workspaces/:workspace_id/members",
+            get(workspace_members::list_workspace_members)
+                .post(workspace_members::add_workspace_member),
+        )
+        .route(
+            "/companies/:id/workspaces/:workspace_id/members/:person_id",
+            axum::routing::delete(workspace_members::remove_workspace_member),
         )
 }

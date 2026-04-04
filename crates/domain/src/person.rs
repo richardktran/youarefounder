@@ -83,3 +83,13 @@ pub struct CreatePersonInput {
     pub specialty: Option<String>,
     pub ai_profile_id: Option<Uuid>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdatePersonInput {
+    pub display_name: Option<String>,
+    pub role_type: Option<RoleType>,
+    /// None = don't change; Some(None) = clear; Some(Some(v)) = set
+    pub specialty: Option<Option<String>>,
+    /// None = don't change; Some(None) = clear; Some(Some(id)) = set
+    pub ai_profile_id: Option<Option<Uuid>>,
+}

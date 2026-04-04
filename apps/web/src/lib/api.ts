@@ -17,13 +17,48 @@ export interface BootstrapStatus {
   company_id: string | null;
 }
 
+export type RunState = "stopped" | "running" | "terminated";
+
 export interface Company {
   id: string;
   name: string;
   slug: string;
   onboarding_complete: boolean;
+  /** Phase 4: simulation control state. */
+  run_state: RunState;
   created_at: string;
   updated_at: string;
+}
+
+export type JobStatus = "pending" | "running" | "succeeded" | "failed";
+export type JobKind = "agent_ticket_run" | "index_repository";
+
+export interface AgentJob {
+  id: string;
+  kind: JobKind;
+  company_id: string;
+  payload: Record<string, unknown>;
+  status: JobStatus;
+  run_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+  attempts: number;
+  max_attempts: number;
+  created_at: string;
+}
+
+export interface AgentRun {
+  id: string;
+  agent_job_id: string;
+  ticket_id: string;
+  person_id: string;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  raw_response: string | null;
+  actions_applied: unknown[];
+  error: string | null;
+  created_at: string;
 }
 
 export type ProductStatus =
@@ -243,6 +278,24 @@ export async function createAiProfile(
 ): Promise<AiProfile> {
   const { data } = await apiClient.post<AiProfile>(
     `/companies/${companyId}/ai-profiles`,
+    input
+  );
+  return data;
+}
+
+export async function updateAiProfile(
+  companyId: string,
+  profileId: string,
+  input: Partial<{
+    display_name: string | null;
+    model_id: string;
+    provider_config: Record<string, unknown>;
+    default_temperature: number | null;
+    default_max_tokens: number | null;
+  }>
+): Promise<AiProfile> {
+  const { data } = await apiClient.patch<AiProfile>(
+    `/companies/${companyId}/ai-profiles/${profileId}`,
     input
   );
   return data;
@@ -612,6 +665,64 @@ export async function declineHiringProposal(
   const { data } = await apiClient.post<HiringProposal>(
     `/companies/${companyId}/hiring-proposals/${proposalId}/decline`,
     { founder_response_text: reason }
+  );
+  return data;
+}
+
+// ─── Simulation controls (Phase 4) ────────────────────────────────────────────
+
+export async function runCompany(companyId: string): Promise<Company> {
+  const { data } = await apiClient.post<Company>(
+    `/companies/${companyId}/run`
+  );
+  return data;
+}
+
+export async function stopCompany(companyId: string): Promise<Company> {
+  const { data } = await apiClient.post<Company>(
+    `/companies/${companyId}/stop`
+  );
+  return data;
+}
+
+export async function terminateCompany(
+  companyId: string,
+  confirmName: string
+): Promise<void> {
+  await apiClient.post(`/companies/${companyId}/terminate`, {
+    confirm_name: confirmName,
+  });
+}
+
+// ─── Agent jobs ────────────────────────────────────────────────────────────────
+
+export async function listAgentJobs(companyId: string): Promise<AgentJob[]> {
+  const { data } = await apiClient.get<AgentJob[]>(
+    `/companies/${companyId}/agent-jobs`
+  );
+  return data;
+}
+
+export async function enqueueTicketRun(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string,
+  personId: string
+): Promise<AgentJob> {
+  const { data } = await apiClient.post<AgentJob>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/run-agent`,
+    { person_id: personId }
+  );
+  return data;
+}
+
+export async function listTicketAgentRuns(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string
+): Promise<AgentRun[]> {
+  const { data } = await apiClient.get<AgentRun[]>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/agent-runs`
   );
   return data;
 }

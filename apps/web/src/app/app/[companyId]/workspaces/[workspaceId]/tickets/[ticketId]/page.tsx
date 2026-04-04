@@ -3,7 +3,17 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, MessageSquare, Send, User, Bot, UserCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  MessageSquare,
+  Send,
+  User,
+  Bot,
+  UserCircle,
+  Zap,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import Link from "next/link";
 import {
   getTicket,
@@ -12,10 +22,13 @@ import {
   createComment,
   updateTicket,
   listWorkspaceMembers,
+  enqueueTicketRun,
+  listTicketAgentRuns,
   type TicketStatus,
   type TicketPriority,
   type TicketType,
   type WorkspaceMember,
+  type AgentRun,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,6 +90,12 @@ export default function TicketPage() {
     queryFn: () => listWorkspaceMembers(companyId, workspaceId),
   });
 
+  const { data: agentRuns } = useQuery({
+    queryKey: ["agent-runs", ticketId],
+    queryFn: () => listTicketAgentRuns(companyId, workspaceId, ticketId),
+    refetchInterval: 5000,
+  });
+
   const updateMutation = useMutation({
     mutationFn: (patch: Parameters<typeof updateTicket>[3]) =>
       updateTicket(companyId, workspaceId, ticketId, patch),
@@ -97,6 +116,15 @@ export default function TicketPage() {
     },
   });
 
+  const runAgentMutation = useMutation({
+    mutationFn: (personId: string) =>
+      enqueueTicketRun(companyId, workspaceId, ticketId, personId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agent-runs", ticketId] });
+      queryClient.invalidateQueries({ queryKey: ["agent-jobs", companyId] });
+    },
+  });
+
   if (ticketLoading) {
     return (
       <div className="flex h-full items-center justify-center p-12">
@@ -109,6 +137,7 @@ export default function TicketPage() {
 
   const statusCfg = STATUS_OPTIONS.find((s) => s.value === ticket.status);
   const assigneeMember = wsMembers.find((m: WorkspaceMember) => m.person_id === ticket.assignee_person_id);
+  const aiAssignees = wsMembers.filter((m: WorkspaceMember) => m.person_kind === "ai_agent");
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
@@ -289,6 +318,10 @@ export default function TicketPage() {
               </div>
             </div>
           </section>
+          {/* Agent run history */}
+          {agentRuns && agentRuns.length > 0 && (
+            <AgentRunHistory runs={agentRuns} />
+          )}
         </div>
 
         {/* Sidebar */}
@@ -381,6 +414,37 @@ export default function TicketPage() {
             </select>
           </SidebarField>
 
+          {/* Run agent */}
+          <div className="pt-2">
+            <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-widest mb-2">
+              Agent
+            </p>
+            {aiAssignees.length === 0 ? (
+              <p className="text-xs text-zinc-600">No AI agents assigned to this workspace.</p>
+            ) : (
+              <div className="space-y-2">
+                {aiAssignees.map((m) => (
+                  <Button
+                    key={m.person_id}
+                    size="sm"
+                    variant="outline"
+                    className="w-full justify-start"
+                    isLoading={runAgentMutation.isPending && runAgentMutation.variables === m.person_id}
+                    onClick={() => runAgentMutation.mutate(m.person_id)}
+                  >
+                    <Zap className="h-3.5 w-3.5 text-amber-400" />
+                    Run {m.display_name}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {agentRuns && agentRuns.length > 0 && (
+              <p className="text-[10px] text-zinc-600 mt-2">
+                {agentRuns.length} run{agentRuns.length !== 1 ? "s" : ""} total
+              </p>
+            )}
+          </div>
+
           {/* Metadata */}
           <div className="pt-4 border-t border-zinc-800 space-y-1.5">
             <p className="text-[10px] text-zinc-700">
@@ -408,5 +472,84 @@ function SidebarField({
       <p className="text-[10px] font-medium text-zinc-500 uppercase tracking-wider">{label}</p>
       {children}
     </div>
+  );
+}
+
+function AgentRunHistory({ runs }: { runs: AgentRun[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+        <Zap className="h-3.5 w-3.5 text-amber-400" />
+        Agent run history
+        <span className="rounded-full bg-zinc-800 px-1.5 py-0.5 text-[10px] font-bold text-zinc-400">
+          {runs.length}
+        </span>
+      </h2>
+      <div className="space-y-2">
+        {runs.map((run) => (
+          <div
+            key={run.id}
+            className="rounded-lg border border-zinc-800 bg-zinc-900/30 overflow-hidden"
+          >
+            <button
+              className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-zinc-900/60 transition-colors"
+              onClick={() => setExpanded(expanded === run.id ? null : run.id)}
+            >
+              {run.error ? (
+                <span className="text-[10px] font-semibold rounded-full px-2 py-0.5 bg-red-950 text-red-400">
+                  error
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold rounded-full px-2 py-0.5 bg-green-950 text-green-400">
+                  ok
+                </span>
+              )}
+              <span className="text-xs text-zinc-400">
+                {new Date(run.created_at).toLocaleString()}
+              </span>
+              {expanded === run.id ? (
+                <ChevronDown className="h-3.5 w-3.5 text-zinc-600 ml-auto" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 text-zinc-600 ml-auto" />
+              )}
+            </button>
+            {expanded === run.id && (
+              <div className="border-t border-zinc-800 px-4 py-3 space-y-3">
+                {run.error && (
+                  <div className="rounded-lg border border-red-900 bg-red-950/30 px-3 py-2">
+                    <p className="text-xs text-red-400 font-mono whitespace-pre-wrap">
+                      {run.error}
+                    </p>
+                  </div>
+                )}
+                {run.raw_response && (
+                  <div>
+                    <p className="text-[10px] font-medium text-zinc-600 uppercase tracking-wider mb-1.5">
+                      Raw LLM response
+                    </p>
+                    <pre className="text-xs text-zinc-400 font-mono bg-zinc-950 rounded-lg p-3 overflow-auto max-h-64 whitespace-pre-wrap">
+                      {run.raw_response}
+                    </pre>
+                  </div>
+                )}
+                {Array.isArray(run.actions_applied) &&
+                  run.actions_applied.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-medium text-zinc-600 uppercase tracking-wider mb-1.5">
+                        Actions applied
+                      </p>
+                      <pre className="text-xs text-zinc-400 font-mono bg-zinc-950 rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap">
+                        {JSON.stringify(run.actions_applied, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

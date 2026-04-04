@@ -17,14 +17,17 @@ import {
   Loader2,
   GitBranch,
   ArrowRight,
+  Pencil,
 } from "lucide-react";
 import {
   listPeople,
   createPerson,
   deletePerson,
+  updatePerson,
   listAiProfiles,
   listAiProviders,
   createAiProfile,
+  updateAiProfile,
   testConnection,
   getOrgChart,
   updateReportingLine,
@@ -32,6 +35,8 @@ import {
   type PersonKind,
   type RoleType,
   type OrgNode,
+  type AiProfile,
+  type ProviderInfo,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -511,7 +516,10 @@ export default function TeamPage() {
                 {humanMembers.map((person) => (
                   <PersonRow
                     key={person.id}
+                    companyId={companyId}
                     person={person}
+                    aiProfiles={aiProfiles}
+                    providers={providers}
                     onDelete={() => deleteMutation.mutate(person.id)}
                     isDeleting={deleteMutation.isPending}
                   />
@@ -531,8 +539,10 @@ export default function TeamPage() {
                 {aiAgents.map((person) => (
                   <PersonRow
                     key={person.id}
+                    companyId={companyId}
                     person={person}
                     aiProfiles={aiProfiles}
+                    providers={providers}
                     onDelete={() => deleteMutation.mutate(person.id)}
                     isDeleting={deleteMutation.isPending}
                   />
@@ -769,19 +779,145 @@ function OrgTreeNode({
 }
 
 function PersonRow({
+  companyId,
   person,
   aiProfiles,
+  providers,
   onDelete,
   isDeleting,
 }: {
+  companyId: string;
   person: Person;
-  aiProfiles?: import("@/lib/api").AiProfile[];
+  aiProfiles?: AiProfile[];
+  providers?: ProviderInfo[];
   onDelete: () => void;
   isDeleting: boolean;
 }) {
+  const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const isAi = person.kind === "ai_agent";
   const linkedProfile = aiProfiles?.find((p) => p.id === person.ai_profile_id);
+
+  // Edit field states
+  const [editName, setEditName] = useState(person.display_name);
+  const [editRole, setEditRole] = useState<RoleType>(person.role_type);
+  const [editSpecialty, setEditSpecialty] = useState(person.specialty ?? "");
+
+  // AI profile edit states
+  // "edit_model" = patch the linked profile in-place; "link" = change which profile is linked
+  const [aiEditMode, setAiEditMode] = useState<"edit_model" | "link">("edit_model");
+  const [editAiProfileId, setEditAiProfileId] = useState(person.ai_profile_id ?? "");
+  const [editModelId, setEditModelId] = useState(linkedProfile?.model_id ?? "");
+  const [editProviderConfig, setEditProviderConfig] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      Object.entries(linkedProfile?.provider_config ?? {})
+        .filter(([, v]) => typeof v === "string")
+        .map(([k, v]) => [k, v as string])
+    )
+  );
+  const [connStatus, setConnStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [connError, setConnError] = useState<string | null>(null);
+
+  // Save state
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const currentProvider = providers?.find((p) => p.kind === linkedProfile?.provider_kind);
+
+  function startEditing() {
+    setEditName(person.display_name);
+    setEditRole(person.role_type);
+    setEditSpecialty(person.specialty ?? "");
+    setAiEditMode(linkedProfile ? "edit_model" : "link");
+    setEditAiProfileId(person.ai_profile_id ?? "");
+    setEditModelId(linkedProfile?.model_id ?? "");
+    setEditProviderConfig(
+      Object.fromEntries(
+        Object.entries(linkedProfile?.provider_config ?? {})
+          .filter(([, v]) => typeof v === "string")
+          .map(([k, v]) => [k, v as string])
+      )
+    );
+    setConnStatus("idle");
+    setConnError(null);
+    setSaveError(null);
+    setExpanded(false);
+    setIsEditing(true);
+  }
+
+  async function handleTestConnection() {
+    if (!linkedProfile) return;
+    setConnStatus("testing");
+    setConnError(null);
+    try {
+      const result = await testConnection({
+        provider_kind: linkedProfile.provider_kind,
+        provider_config: {
+          schema_version: 1,
+          ...Object.fromEntries(
+            Object.entries(editProviderConfig).map(([k, v]) => [k, v.trim()])
+          ),
+        },
+        model_id: editModelId.trim() || undefined,
+      });
+      setConnStatus(result.ok ? "ok" : "error");
+      if (!result.ok) setConnError(result.error ?? "Connection failed");
+    } catch {
+      setConnStatus("error");
+      setConnError("Network error — is the API running?");
+    }
+  }
+
+  async function handleSave() {
+    if (!editName.trim()) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      // Patch the linked AI profile in-place (model + config only; provider_kind is immutable)
+      if (isAi && aiEditMode === "edit_model" && linkedProfile) {
+        const modelChanged = editModelId.trim() !== linkedProfile.model_id;
+        const origConfig = Object.fromEntries(
+          Object.entries(linkedProfile.provider_config)
+            .filter(([, v]) => typeof v === "string")
+            .map(([k, v]) => [k, v as string])
+        );
+        const configChanged =
+          JSON.stringify(editProviderConfig) !== JSON.stringify(origConfig);
+
+        if (modelChanged || configChanged) {
+          await updateAiProfile(companyId, linkedProfile.id, {
+            model_id: editModelId.trim() || undefined,
+            provider_config: {
+              schema_version: 1,
+              ...Object.fromEntries(
+                Object.entries(editProviderConfig).map(([k, v]) => [k, v.trim()])
+              ),
+            },
+          });
+          queryClient.invalidateQueries({ queryKey: ["ai-profiles", companyId] });
+        }
+      }
+
+      // Patch person fields
+      const personInput: Parameters<typeof updatePerson>[2] = {
+        display_name: editName.trim(),
+        role_type: editRole,
+        specialty: editSpecialty.trim() || null,
+      };
+      if (isAi && aiEditMode === "link") {
+        personInput.ai_profile_id = editAiProfileId || null;
+      }
+
+      await updatePerson(companyId, person.id, personInput);
+      queryClient.invalidateQueries({ queryKey: ["people", companyId] });
+      setIsEditing(false);
+    } catch {
+      setSaveError("Failed to save changes. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
 
   return (
     <Card className="p-4">
@@ -819,7 +955,7 @@ function PersonRow({
             {ROLE_LABELS[person.role_type]}
           </span>
 
-          {isAi && (
+          {isAi && !isEditing && (
             <button
               onClick={() => setExpanded((v) => !v)}
               className="text-zinc-600 hover:text-zinc-400 transition-colors"
@@ -834,8 +970,22 @@ function PersonRow({
           )}
 
           <button
+            onClick={isEditing ? () => setIsEditing(false) : startEditing}
+            disabled={isDeleting || isSaving}
+            className={cn(
+              "transition-colors disabled:opacity-50",
+              isEditing
+                ? "text-zinc-500 hover:text-zinc-300"
+                : "text-zinc-600 hover:text-zinc-300"
+            )}
+            title={isEditing ? "Cancel editing" : "Edit member"}
+          >
+            <Pencil className="h-4 w-4" />
+          </button>
+
+          <button
             onClick={onDelete}
-            disabled={isDeleting}
+            disabled={isDeleting || isEditing || isSaving}
             className="text-zinc-700 hover:text-red-400 transition-colors disabled:opacity-50"
             title="Remove member"
           >
@@ -844,8 +994,8 @@ function PersonRow({
         </div>
       </div>
 
-      {/* AI profile details */}
-      {expanded && isAi && (
+      {/* AI profile details (read-only expand) */}
+      {expanded && isAi && !isEditing && (
         <div className="mt-3 pt-3 border-t border-zinc-800">
           {linkedProfile ? (
             <div className="flex items-center gap-2 text-xs text-zinc-400">
@@ -861,6 +1011,204 @@ function PersonRow({
               No AI profile linked
             </p>
           )}
+        </div>
+      )}
+
+      {/* Inline edit form */}
+      {isEditing && (
+        <div className="mt-4 pt-4 border-t border-zinc-800 space-y-4">
+          {/* Basic fields */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <Input
+                placeholder="Display name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-500 mb-1.5 block">Role</label>
+              <select
+                value={editRole}
+                onChange={(e) => setEditRole(e.target.value as RoleType)}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              >
+                <option value="co_founder">Co-founder</option>
+                <option value="ceo">CEO</option>
+                <option value="cto">CTO</option>
+                <option value="specialist">Specialist</option>
+              </select>
+            </div>
+            <div>
+              <Input
+                label="Specialty (optional)"
+                placeholder="e.g. Frontend, Design, Growth"
+                value={editSpecialty}
+                onChange={(e) => setEditSpecialty(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* AI profile section */}
+          {isAi && (
+            <div className="border-t border-zinc-800 pt-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Cpu className="h-3.5 w-3.5" />
+                  AI Model
+                </span>
+                <div className="flex rounded-lg border border-zinc-700 overflow-hidden">
+                  {(["edit_model", "link"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setAiEditMode(mode)}
+                      className={cn(
+                        "px-3 py-1 text-xs font-medium transition-colors",
+                        aiEditMode === mode
+                          ? "bg-zinc-700 text-white"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      )}
+                    >
+                      {mode === "edit_model" ? "Edit model" : "Switch profile"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {aiEditMode === "link" ? (
+                /* Switch to a different existing profile */
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">AI profile</label>
+                  <select
+                    value={editAiProfileId}
+                    onChange={(e) => setEditAiProfileId(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                  >
+                    <option value="">No profile (disable AI)</option>
+                    {aiProfiles?.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.display_name ?? p.model_id} · {p.provider_kind}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-zinc-600">
+                    Select a previously configured AI profile, or remove the link.
+                  </p>
+                </div>
+              ) : linkedProfile ? (
+                /* Edit the linked profile's model + config in-place */
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-xs">
+                    <Cpu className="h-3 w-3 text-zinc-500" />
+                    <span className="text-zinc-500">Provider:</span>
+                    <span className="text-zinc-300 capitalize">{linkedProfile.provider_kind}</span>
+                    <span className="text-zinc-700 text-xs">(immutable — switch profiles to change)</span>
+                  </div>
+
+                  <Input
+                    label="Model"
+                    placeholder="e.g. llama3.2, mistral, codellama"
+                    value={editModelId}
+                    onChange={(e) => {
+                      setEditModelId(e.target.value);
+                      setConnStatus("idle");
+                    }}
+                    hint={
+                      linkedProfile.provider_kind === "ollama"
+                        ? "Run `ollama list` to see available models."
+                        : undefined
+                    }
+                  />
+
+                  {currentProvider?.config_fields.map((field) => (
+                    <Input
+                      key={field.key}
+                      label={field.label}
+                      placeholder={field.placeholder}
+                      type={field.field_type === "password" ? "password" : "text"}
+                      value={editProviderConfig[field.key] ?? field.default_value ?? ""}
+                      onChange={(e) => {
+                        setEditProviderConfig((prev) => ({
+                          ...prev,
+                          [field.key]: e.target.value,
+                        }));
+                        setConnStatus("idle");
+                      }}
+                    />
+                  ))}
+
+                  {/* Test connection */}
+                  <div className="space-y-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      onClick={handleTestConnection}
+                      disabled={connStatus === "testing"}
+                      className="w-full"
+                    >
+                      {connStatus === "testing" ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Testing connection…
+                        </>
+                      ) : (
+                        "Test connection"
+                      )}
+                    </Button>
+                    {connStatus === "ok" && (
+                      <div className="flex items-center gap-2 text-xs text-emerald-400">
+                        <CheckCircle className="h-3.5 w-3.5 shrink-0" />
+                        {editModelId.trim()
+                          ? `Connected — ${editModelId.trim()} responded successfully.`
+                          : "Connected successfully."}
+                      </div>
+                    )}
+                    {connStatus === "error" && (
+                      <div className="flex items-start gap-2 text-xs text-red-400">
+                        <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span>{connError ?? "Connection failed."}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-zinc-600">
+                  No AI profile linked. Switch to &quot;Switch profile&quot; to link one.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Error */}
+          {saveError && (
+            <p className="text-xs text-red-400 flex items-center gap-1.5">
+              <XCircle className="h-3.5 w-3.5 shrink-0" />
+              {saveError}
+            </p>
+          )}
+
+          {/* Actions */}
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setIsEditing(false)}
+              disabled={isSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              isLoading={isSaving}
+              disabled={!editName.trim() || isSaving}
+            >
+              Save changes
+            </Button>
+          </div>
         </div>
       )}
     </Card>

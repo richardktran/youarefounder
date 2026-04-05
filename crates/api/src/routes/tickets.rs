@@ -3,9 +3,10 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use db::job::{PRIORITY_CO_FOUNDER, PRIORITY_EXECUTIVE, PRIORITY_SPECIALIST};
 use domain::{
-    AgentTicketRunPayload, CreateCommentInput, CreateTicketInput, JobKind, PersonKind, RunState,
-    Ticket, TicketComment, UpdateTicketInput,
+    AgentTicketRunPayload, CreateCommentInput, CreateTicketInput, JobKind, PersonKind, RoleType,
+    RunState, Ticket, TicketComment, UpdateTicketInput,
 };
 use tracing::info;
 use uuid::Uuid;
@@ -168,7 +169,7 @@ async fn maybe_trigger_agents_for_ticket(
     if let Some(assignee_id) = ticket.assignee_person_id {
         if let Ok(Some(person)) = db::person::get_person(&state.pool, company_id, assignee_id).await {
             if person.kind == PersonKind::AiAgent {
-                enqueue_for_person(state, company_id, ticket_id, assignee_id).await;
+                enqueue_for_person(state, company_id, ticket_id, assignee_id, &person.role_type).await;
                 return;
             }
         }
@@ -183,7 +184,7 @@ async fn maybe_trigger_agents_for_ticket(
     for member in members {
         if let Ok(Some(person)) = db::person::get_person(&state.pool, company_id, member.person_id).await {
             if person.kind == PersonKind::AiAgent {
-                enqueue_for_person(state, company_id, ticket_id, person.id).await;
+                enqueue_for_person(state, company_id, ticket_id, person.id, &person.role_type).await;
             }
         }
     }
@@ -216,13 +217,20 @@ async fn maybe_continue_agent(
     maybe_trigger_agents_for_ticket(state, company_id, workspace_id, ticket_id).await;
 }
 
-/// Insert one `AgentTicketRun` job into the queue.
+/// Insert one `AgentTicketRun` job into the queue with role-based priority.
 async fn enqueue_for_person(
     state: &AppState,
     company_id: Uuid,
     ticket_id: Uuid,
     person_id: Uuid,
+    role_type: &RoleType,
 ) {
+    let priority = match role_type {
+        RoleType::CoFounder => PRIORITY_CO_FOUNDER,
+        RoleType::Ceo | RoleType::Cto => PRIORITY_EXECUTIVE,
+        RoleType::Specialist => PRIORITY_SPECIALIST,
+    };
+
     let payload = match serde_json::to_value(AgentTicketRunPayload {
         ticket_id,
         person_id,
@@ -231,12 +239,13 @@ async fn enqueue_for_person(
         Err(_) => return,
     };
 
-    match db::job::enqueue(&state.pool, JobKind::AgentTicketRun, company_id, payload).await {
+    match db::job::enqueue(&state.pool, JobKind::AgentTicketRun, company_id, payload, priority).await {
         Ok(job) => {
             info!(
                 job_id   = %job.id,
                 ticket_id = %ticket_id,
                 person_id = %person_id,
+                priority = priority,
                 "auto-enqueued agent run"
             );
         }

@@ -2,6 +2,7 @@ pub mod agent_jobs;
 pub mod ai_profiles;
 pub mod bootstrap;
 pub mod companies;
+pub mod decisions;
 pub mod hiring;
 pub mod people;
 pub mod products;
@@ -115,6 +116,19 @@ pub fn v1_router() -> Router<AppState> {
         .route(
             "/companies/:id/hiring-proposals/:proposal_id/decline",
             axum::routing::post(hiring::decline_proposal),
+        )
+        // Decision requests (Phase 6)
+        .route(
+            "/companies/:id/decision-requests",
+            get(decisions::list_decisions).post(decisions::create_decision),
+        )
+        .route(
+            "/companies/:id/decision-requests/:decision_id",
+            get(decisions::get_decision),
+        )
+        .route(
+            "/companies/:id/decision-requests/:decision_id/answer",
+            axum::routing::post(decisions::answer_decision),
         )
         // Workspaces (nested under company)
         .route(

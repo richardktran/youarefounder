@@ -73,6 +73,8 @@ pub struct AgentJob {
     pub company_id: Uuid,
     pub payload: Value,
     pub status: JobStatus,
+    /// Lower = higher priority. 10=co_founder, 20=ceo/cto, 50=specialist/default.
+    pub priority: i16,
     pub run_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,

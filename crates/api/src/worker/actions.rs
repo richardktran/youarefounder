@@ -26,6 +26,9 @@ pub enum AgentAction {
         status: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         priority: Option<String>,
+        /// Reassign the ticket to another team member (use their UUID from the team list).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee_person_id: Option<Uuid>,
     },
     /// Create a new ticket in the same workspace (or a specified one).
     CreateTicket {
@@ -38,6 +41,10 @@ pub enum AgentAction {
         status: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         priority: Option<String>,
+        /// Assign to a specific team member (use their UUID from the team list).
+        /// Defaults to yourself if omitted.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee_person_id: Option<Uuid>,
         /// Optional override workspace; defaults to same workspace as current ticket.
         #[serde(skip_serializing_if = "Option::is_none")]
         workspace_id: Option<Uuid>,
@@ -52,6 +59,14 @@ pub enum AgentAction {
         rationale: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         scope_of_work: Option<String>,
+    },
+    /// Escalate a structured decision to the founder — blocks the ticket until answered.
+    RequestDecision {
+        /// The specific question being asked.
+        question: String,
+        /// Optional background context to help the founder decide.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_note: Option<String>,
     },
 }
 

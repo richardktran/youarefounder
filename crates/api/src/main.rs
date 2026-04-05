@@ -68,6 +68,9 @@ async fn main() -> Result<()> {
         state.events_tx.clone(),
     );
 
+    // ── Executive scheduler (Phase 5) ─────────────────────────────────────────
+    worker::scheduler::spawn(state.pool.clone());
+
     // ── Router ─────────────────────────────────────────────────────────────────
     let cors = CorsLayer::new()
         .allow_origin(Any)

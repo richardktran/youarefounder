@@ -671,6 +671,56 @@ export async function declineHiringProposal(
   return data;
 }
 
+// ─── Decision requests (Phase 6) ─────────────────────────────────────────────
+
+export type DecisionStatus = "pending_founder" | "answered";
+
+export interface DecisionRequest {
+  id: string;
+  company_id: string;
+  ticket_id: string;
+  raised_by_person_id: string | null;
+  question: string;
+  context_note: string | null;
+  status: DecisionStatus;
+  founder_answer: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listDecisionRequests(
+  companyId: string,
+  status?: DecisionStatus
+): Promise<DecisionRequest[]> {
+  const { data } = await apiClient.get<DecisionRequest[]>(
+    `/companies/${companyId}/decision-requests`,
+    { params: status ? { status } : undefined }
+  );
+  return data;
+}
+
+export async function getDecisionRequest(
+  companyId: string,
+  decisionId: string
+): Promise<DecisionRequest> {
+  const { data } = await apiClient.get<DecisionRequest>(
+    `/companies/${companyId}/decision-requests/${decisionId}`
+  );
+  return data;
+}
+
+export async function answerDecisionRequest(
+  companyId: string,
+  decisionId: string,
+  founderAnswer: string
+): Promise<DecisionRequest> {
+  const { data } = await apiClient.post<DecisionRequest>(
+    `/companies/${companyId}/decision-requests/${decisionId}/answer`,
+    { founder_answer: founderAnswer }
+  );
+  return data;
+}
+
 // ─── Simulation controls (Phase 4) ────────────────────────────────────────────
 
 export async function runCompany(companyId: string): Promise<Company> {

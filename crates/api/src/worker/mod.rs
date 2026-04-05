@@ -13,6 +13,7 @@
 pub mod actions;
 pub mod agent_runner;
 pub mod context;
+pub mod scheduler;
 
 use std::time::Duration;
 

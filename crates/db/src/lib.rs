@@ -1,6 +1,7 @@
 pub mod agent_run;
 pub mod ai_profile;
 pub mod company;
+pub mod decision;
 pub mod hiring;
 pub mod job;
 pub mod person;

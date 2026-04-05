@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use ai_core::{ChatCompletionRequest, Message};
 use ai_providers::ProviderRegistry;
 use domain::{
-    AgentTicketRunPayload, CreateCommentInput, CreateProposalInput, CreateTicketInput,
-    TicketStatus, TicketPriority, TicketType, UpdateTicketInput,
+    AgentTicketRunPayload, CreateCommentInput, CreateDecisionRequestInput, CreateProposalInput,
+    CreateTicketInput, JobKind, TicketPriority, TicketStatus, TicketType, UpdateTicketInput,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use super::actions::{parse_response, AgentAction};
 use super::context::ContextPack;
+use super::scheduler::role_priority;
 use crate::job_events::JobEvent;
 
 /// Run one agent turn for the given job.
@@ -193,13 +194,24 @@ async fn apply_actions(
                 applied.push(json!({"type": "add_comment", "body": body}));
             }
 
-            AgentAction::UpdateTicket { title, description, status, priority } => {
+            AgentAction::UpdateTicket {
+                title,
+                description,
+                status,
+                priority,
+                assignee_person_id,
+            } => {
                 let status_parsed = status
                     .as_deref()
                     .and_then(|s| s.parse::<TicketStatus>().ok());
                 let priority_parsed = priority
                     .as_deref()
                     .and_then(|p| p.parse::<TicketPriority>().ok());
+
+                // Validate the assignee exists in the team before applying.
+                let resolved_assignee = assignee_person_id.and_then(|aid| {
+                    ctx.all_people.iter().find(|p| p.id == aid).cloned()
+                });
 
                 db::ticket::update_ticket(
                     pool,
@@ -210,13 +222,48 @@ async fn apply_actions(
                         status: status_parsed,
                         priority: priority_parsed,
                         ticket_type: None,
-                        assignee_person_id: None,
+                        assignee_person_id: resolved_assignee.as_ref().map(|p| p.id),
                         parent_ticket_id: None,
                     },
                 )
                 .await
                 .context("update_ticket")?;
-                applied.push(json!({"type": "update_ticket", "status": status, "title": title}));
+
+                // If ticket was reassigned to an AI agent, immediately enqueue a job for them.
+                if let Some(new_assignee) = &resolved_assignee {
+                    if matches!(new_assignee.kind, domain::PersonKind::AiAgent)
+                        && new_assignee.ai_profile_id.is_some()
+                    {
+                        let job_priority = role_priority(&new_assignee.role_type);
+                        let payload = json!({
+                            "ticket_id": ctx.ticket.id,
+                            "person_id": new_assignee.id,
+                        });
+                        match db::job::enqueue(
+                            pool,
+                            JobKind::AgentTicketRun,
+                            company_id,
+                            payload,
+                            job_priority,
+                        )
+                        .await
+                        {
+                            Ok(j) => info!(
+                                job_id = %j.id,
+                                assignee = %new_assignee.display_name,
+                                "auto-enqueued job for reassigned ticket"
+                            ),
+                            Err(e) => warn!(err = %e, "failed to auto-enqueue for reassigned ticket"),
+                        }
+                    }
+                }
+
+                applied.push(json!({
+                    "type": "update_ticket",
+                    "status": status,
+                    "title": title,
+                    "assignee_person_id": assignee_person_id,
+                }));
             }
 
             AgentAction::CreateTicket {
@@ -225,6 +272,7 @@ async fn apply_actions(
                 ticket_type,
                 status,
                 priority,
+                assignee_person_id,
                 workspace_id,
             } => {
                 let ws_id = workspace_id.unwrap_or(ctx.ticket.workspace_id);
@@ -241,7 +289,12 @@ async fn apply_actions(
                     .and_then(|p| p.parse::<TicketPriority>().ok())
                     .unwrap_or_default();
 
-                db::ticket::create_ticket(
+                // Resolve assignee: use explicit override if valid, otherwise default to self.
+                let resolved_assignee = assignee_person_id
+                    .and_then(|aid| ctx.all_people.iter().find(|p| p.id == aid).cloned())
+                    .unwrap_or_else(|| ctx.assignee.clone());
+
+                let new_ticket = db::ticket::create_ticket(
                     pool,
                     ws_id,
                     CreateTicketInput {
@@ -250,13 +303,47 @@ async fn apply_actions(
                         ticket_type: Some(type_parsed),
                         status: Some(status_parsed),
                         priority: Some(priority_parsed),
-                        assignee_person_id: Some(person_id),
+                        assignee_person_id: Some(resolved_assignee.id),
                         parent_ticket_id: None,
                     },
                 )
                 .await
                 .context("create_ticket")?;
-                applied.push(json!({"type": "create_ticket", "title": title}));
+
+                // If the assignee is an AI agent, immediately enqueue a job so they
+                // can start working without waiting for the next scheduler tick.
+                if matches!(resolved_assignee.kind, domain::PersonKind::AiAgent)
+                    && resolved_assignee.ai_profile_id.is_some()
+                {
+                    let job_priority = role_priority(&resolved_assignee.role_type);
+                    let payload = json!({
+                        "ticket_id": new_ticket.id,
+                        "person_id": resolved_assignee.id,
+                    });
+                    match db::job::enqueue(
+                        pool,
+                        JobKind::AgentTicketRun,
+                        company_id,
+                        payload,
+                        job_priority,
+                    )
+                    .await
+                    {
+                        Ok(j) => info!(
+                            job_id = %j.id,
+                            ticket_id = %new_ticket.id,
+                            assignee = %resolved_assignee.display_name,
+                            "auto-enqueued job for new ticket"
+                        ),
+                        Err(e) => warn!(err = %e, "failed to auto-enqueue for new ticket"),
+                    }
+                }
+
+                applied.push(json!({
+                    "type": "create_ticket",
+                    "title": title,
+                    "assignee_person_id": resolved_assignee.id,
+                }));
             }
 
             AgentAction::ProposeHire {
@@ -285,6 +372,28 @@ async fn apply_actions(
                     "type": "propose_hire",
                     "employee_display_name": employee_display_name,
                     "role_type": role_type,
+                }));
+            }
+
+            AgentAction::RequestDecision {
+                question,
+                context_note,
+            } => {
+                db::decision::create_decision_request(
+                    pool,
+                    company_id,
+                    CreateDecisionRequestInput {
+                        ticket_id: ctx.ticket.id,
+                        raised_by_person_id: Some(person_id),
+                        question: question.clone(),
+                        context_note: context_note.clone(),
+                    },
+                )
+                .await
+                .context("request_decision")?;
+                applied.push(json!({
+                    "type": "request_decision",
+                    "question": question,
                 }));
             }
         }

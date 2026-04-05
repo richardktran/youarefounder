@@ -17,6 +17,7 @@ fn row_to_job(row: &PgRow) -> AgentJob {
         status: status_str
             .parse::<JobStatus>()
             .unwrap_or(JobStatus::Pending),
+        priority: row.try_get("priority").unwrap_or(50),
         run_at: row.get("run_at"),
         started_at: row.get("started_at"),
         completed_at: row.get("completed_at"),
@@ -28,26 +29,36 @@ fn row_to_job(row: &PgRow) -> AgentJob {
 }
 
 /// Enqueue a new job.
+///
+/// `priority` controls processing order: lower numbers are claimed first.
+/// Use `JOB_PRIORITY_*` constants or pass 50 for the default.
 pub async fn enqueue(
     pool: &PgPool,
     kind: JobKind,
     company_id: Uuid,
     payload: Value,
+    priority: i16,
 ) -> Result<AgentJob> {
     let row = sqlx::query(
-        "INSERT INTO agent_jobs (kind, company_id, payload)
-         VALUES ($1, $2, $3)
-         RETURNING id, kind, company_id, payload, status, run_at,
+        "INSERT INTO agent_jobs (kind, company_id, payload, priority)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, kind, company_id, payload, status, priority, run_at,
                    started_at, completed_at, error, attempts, max_attempts, created_at",
     )
     .bind(kind.to_string())
     .bind(company_id)
     .bind(payload)
+    .bind(priority)
     .fetch_one(pool)
     .await?;
 
     Ok(row_to_job(&row))
 }
+
+/// Priority tiers for agent jobs. Lower = processed first.
+pub const PRIORITY_CO_FOUNDER: i16 = 10;
+pub const PRIORITY_EXECUTIVE: i16 = 20;
+pub const PRIORITY_SPECIALIST: i16 = 50;
 
 /// Reset jobs stuck in `running` to `pending`.
 ///
@@ -95,17 +106,42 @@ pub async fn claim_next(pool: &PgPool) -> Result<Option<AgentJob>> {
                    WHERE rj.company_id = aj.company_id
                      AND rj.status = 'running'
                ) < GREATEST(1, c.max_concurrent_agents)
-             ORDER BY aj.run_at ASC
+             ORDER BY aj.priority ASC, aj.run_at ASC
              LIMIT 1
              FOR UPDATE OF aj SKIP LOCKED
          )
-         RETURNING id, kind, company_id, payload, status, run_at,
+         RETURNING id, kind, company_id, payload, status, priority, run_at,
                    started_at, completed_at, error, attempts, max_attempts, created_at",
     )
     .fetch_optional(pool)
     .await?;
 
     Ok(row.as_ref().map(row_to_job))
+}
+
+/// Check if there is already a pending or running `agent_ticket_run` job
+/// for the given (ticket, person) pair. Used by the scheduler to avoid
+/// double-enqueuing a ticket that is already in-flight.
+pub async fn has_active_job_for_ticket(
+    pool: &PgPool,
+    ticket_id: Uuid,
+    person_id: Uuid,
+) -> Result<bool> {
+    // The payload is JSONB with keys `ticket_id` and `person_id`.
+    let row = sqlx::query(
+        "SELECT 1 FROM agent_jobs
+         WHERE kind = 'agent_ticket_run'
+           AND status IN ('pending', 'running')
+           AND payload->>'ticket_id' = $1::text
+           AND payload->>'person_id' = $2::text
+         LIMIT 1",
+    )
+    .bind(ticket_id)
+    .bind(person_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.is_some())
 }
 
 /// List recent agent jobs for a company (newest first).
@@ -115,7 +151,7 @@ pub async fn list_jobs(
     limit: i64,
 ) -> Result<Vec<AgentJob>> {
     let rows = sqlx::query(
-        "SELECT id, kind, company_id, payload, status, run_at,
+        "SELECT id, kind, company_id, payload, status, priority, run_at,
                 started_at, completed_at, error, attempts, max_attempts, created_at
          FROM agent_jobs
          WHERE company_id = $1

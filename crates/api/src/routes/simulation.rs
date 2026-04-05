@@ -6,11 +6,13 @@ use axum::{
 };
 use domain::{Company, RunState};
 use serde::Deserialize;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
     error::{ApiError, ApiResult},
     state::AppState,
+    worker::scheduler,
 };
 
 /// `POST /v1/companies/:id/run`
@@ -33,6 +35,17 @@ pub async fn run_company(
     let updated = db::company::set_run_state(&state.pool, company_id, RunState::Running)
         .await?
         .ok_or(ApiError::NotFound)?;
+
+    // Immediately scan all tickets and enqueue any that are not yet queued.
+    // This avoids waiting for the next scheduler tick when starting or resuming.
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        info!(company_id = %company_id, "simulation started — scanning tickets");
+        match scheduler::schedule_company(&pool, company_id).await {
+            Ok(()) => info!(company_id = %company_id, "initial ticket scan complete"),
+            Err(e) => warn!(company_id = %company_id, err = %e, "initial ticket scan failed"),
+        }
+    });
 
     Ok(Json(updated))
 }

@@ -12,7 +12,8 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     Json,
 };
-use domain::{AgentJob, AgentRun, AgentTicketRunPayload, JobKind, RunState};
+use db::job::{PRIORITY_CO_FOUNDER, PRIORITY_EXECUTIVE, PRIORITY_SPECIALIST};
+use domain::{AgentJob, AgentRun, AgentTicketRunPayload, JobKind, PersonKind, RoleType, RunState};
 use futures_util::StreamExt as _;
 use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
@@ -62,14 +63,28 @@ pub async fn enqueue_ticket_run(
         return Err(ApiError::NotFound);
     }
 
+    // Determine priority from the person's role so manual runs also respect ordering.
+    let priority = if let Ok(Some(person)) =
+        db::person::get_person(&state.pool, company_id, input.person_id).await
+    {
+        match (&person.kind, &person.role_type) {
+            (PersonKind::AiAgent, RoleType::CoFounder) => PRIORITY_CO_FOUNDER,
+            (PersonKind::AiAgent, RoleType::Ceo | RoleType::Cto) => PRIORITY_EXECUTIVE,
+            _ => PRIORITY_SPECIALIST,
+        }
+    } else {
+        PRIORITY_SPECIALIST
+    };
+
     let payload = serde_json::to_value(AgentTicketRunPayload {
         ticket_id,
         person_id: input.person_id,
     })
     .map_err(|e| ApiError::Internal(e.into()))?;
 
-    let job = db::job::enqueue(&state.pool, JobKind::AgentTicketRun, company_id, payload)
-        .await?;
+    let job =
+        db::job::enqueue(&state.pool, JobKind::AgentTicketRun, company_id, payload, priority)
+            .await?;
 
     Ok((StatusCode::CREATED, Json(job)))
 }

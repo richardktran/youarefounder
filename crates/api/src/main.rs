@@ -47,6 +47,17 @@ async fn main() -> Result<()> {
         .await
         .context("run migrations")?;
 
+    match db::job::requeue_orphaned_running_jobs(&pool).await {
+        Ok(n) if n > 0 => {
+            info!(
+                count = n,
+                "requeued agent jobs that were stuck in running (orphaned after prior API run)"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(err = %e, "failed to requeue orphaned running jobs"),
+    }
+
     // ── App state ─────────────────────────────────────────────────────────────
     let state = AppState::new(pool);
 

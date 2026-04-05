@@ -26,6 +26,8 @@ export interface Company {
   onboarding_complete: boolean;
   /** Phase 4: simulation control state. */
   run_state: RunState;
+  /** Maximum number of agent jobs that may run concurrently (default 1). */
+  max_concurrent_agents: number;
   created_at: string;
   updated_at: string;
 }
@@ -192,7 +194,7 @@ export async function createCompany(input: {
 
 export async function updateCompany(
   id: string,
-  input: Partial<{ name: string; onboarding_complete: boolean }>
+  input: Partial<{ name: string; onboarding_complete: boolean; max_concurrent_agents: number }>
 ): Promise<Company> {
   const { data } = await apiClient.patch<Company>(`/companies/${id}`, input);
   return data;

@@ -50,6 +50,8 @@ pub struct Company {
     pub onboarding_complete: bool,
     /// Phase 4: simulation control state.
     pub run_state: RunState,
+    /// Maximum number of agent jobs that can run concurrently for this company.
+    pub max_concurrent_agents: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -73,6 +75,7 @@ pub struct UpdateCompanyInput {
     pub name: Option<String>,
     pub onboarding_complete: Option<bool>,
     pub run_state: Option<RunState>,
+    pub max_concurrent_agents: Option<i32>,
 }
 
 /// Response returned by `GET /v1/bootstrap` so the UI knows

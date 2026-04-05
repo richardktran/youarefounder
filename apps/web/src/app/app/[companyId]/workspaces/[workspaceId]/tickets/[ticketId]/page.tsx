@@ -22,7 +22,6 @@ import {
   createComment,
   updateTicket,
   listWorkspaceMembers,
-  enqueueTicketRun,
   listTicketAgentRuns,
   type TicketStatus,
   type TicketPriority,
@@ -116,15 +115,6 @@ export default function TicketPage() {
     },
   });
 
-  const runAgentMutation = useMutation({
-    mutationFn: (personId: string) =>
-      enqueueTicketRun(companyId, workspaceId, ticketId, personId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agent-runs", ticketId] });
-      queryClient.invalidateQueries({ queryKey: ["agent-jobs", companyId] });
-    },
-  });
-
   if (ticketLoading) {
     return (
       <div className="flex h-full items-center justify-center p-12">
@@ -137,7 +127,6 @@ export default function TicketPage() {
 
   const statusCfg = STATUS_OPTIONS.find((s) => s.value === ticket.status);
   const assigneeMember = wsMembers.find((m: WorkspaceMember) => m.person_id === ticket.assignee_person_id);
-  const aiAssignees = wsMembers.filter((m: WorkspaceMember) => m.person_kind === "ai_agent");
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
@@ -414,36 +403,17 @@ export default function TicketPage() {
             </select>
           </SidebarField>
 
-          {/* Run agent */}
-          <div className="pt-2">
-            <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-widest mb-2">
-              Agent
-            </p>
-            {aiAssignees.length === 0 ? (
-              <p className="text-xs text-zinc-600">No AI agents assigned to this workspace.</p>
-            ) : (
-              <div className="space-y-2">
-                {aiAssignees.map((m) => (
-                  <Button
-                    key={m.person_id}
-                    size="sm"
-                    variant="outline"
-                    className="w-full justify-start"
-                    isLoading={runAgentMutation.isPending && runAgentMutation.variables === m.person_id}
-                    onClick={() => runAgentMutation.mutate(m.person_id)}
-                  >
-                    <Zap className="h-3.5 w-3.5 text-amber-400" />
-                    Run {m.display_name}
-                  </Button>
-                ))}
-              </div>
-            )}
-            {agentRuns && agentRuns.length > 0 && (
-              <p className="text-[10px] text-zinc-600 mt-2">
+          {/* Agent runs summary */}
+          {agentRuns && agentRuns.length > 0 && (
+            <div className="pt-2">
+              <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-widest mb-1">
+                Agent
+              </p>
+              <p className="text-[10px] text-zinc-600">
                 {agentRuns.length} run{agentRuns.length !== 1 ? "s" : ""} total
               </p>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Metadata */}
           <div className="pt-4 border-t border-zinc-800 space-y-1.5">

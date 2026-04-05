@@ -49,8 +49,33 @@ pub async fn enqueue(
     Ok(row_to_job(&row))
 }
 
+/// Reset jobs stuck in `running` to `pending`.
+///
+/// When the API process restarts, any in-flight job from the previous process
+/// is orphaned — it still counts as `running`, which blocks `claim_next`'s
+/// concurrency check and leaves the queue dead. Call once at startup.
+pub async fn requeue_orphaned_running_jobs(pool: &PgPool) -> Result<u64> {
+    let result = sqlx::query(
+        "UPDATE agent_jobs
+         SET status     = 'pending',
+             started_at = NULL,
+             run_at     = NOW(),
+             error      = NULL
+         WHERE status = 'running'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Claim the next pending job using SKIP LOCKED to avoid contention.
-/// Only claims jobs for companies whose run_state is 'running'.
+///
+/// Only claims a job when ALL of these hold for the job's company:
+/// - `run_state = 'running'`
+/// - The number of currently-running jobs is below `max_concurrent_agents`
+///
+/// This makes concurrency limits dynamic: changing `max_concurrent_agents` on
+/// the company row takes effect on the next poll cycle without a server restart.
 pub async fn claim_next(pool: &PgPool) -> Result<Option<AgentJob>> {
     let row = sqlx::query(
         "UPDATE agent_jobs
@@ -58,11 +83,18 @@ pub async fn claim_next(pool: &PgPool) -> Result<Option<AgentJob>> {
              started_at = NOW(),
              attempts   = attempts + 1
          WHERE id = (
-             SELECT aj.id FROM agent_jobs aj
+             SELECT aj.id
+             FROM agent_jobs aj
              JOIN companies c ON c.id = aj.company_id
              WHERE aj.status = 'pending'
                AND aj.run_at <= NOW()
                AND c.run_state = 'running'
+               AND (
+                   SELECT COUNT(*)
+                   FROM agent_jobs rj
+                   WHERE rj.company_id = aj.company_id
+                     AND rj.status = 'running'
+               ) < GREATEST(1, c.max_concurrent_agents)
              ORDER BY aj.run_at ASC
              LIMIT 1
              FOR UPDATE OF aj SKIP LOCKED

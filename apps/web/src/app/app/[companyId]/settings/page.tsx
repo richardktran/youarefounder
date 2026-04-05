@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { getCompany, listProducts, updateCompany, updateProduct } from "@/lib/api";
+import { Zap } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +37,8 @@ export default function SettingsPage() {
 
   const [companyName, setCompanyName] = useState<string>("");
   const [savedCompany, setSavedCompany] = useState(false);
+  const [maxConcurrent, setMaxConcurrent] = useState<number>(1);
+  const [savedConcurrency, setSavedConcurrency] = useState(false);
 
   const updateCompanyMutation = useMutation({
     mutationFn: () => updateCompany(companyId, { name: companyName }),
@@ -46,8 +49,20 @@ export default function SettingsPage() {
     },
   });
 
+  const updateConcurrencyMutation = useMutation({
+    mutationFn: () => updateCompany(companyId, { max_concurrent_agents: maxConcurrent }),
+    onSuccess: (updated) => {
+      qc.setQueryData(["company", companyId], updated);
+      setSavedConcurrency(true);
+      setTimeout(() => setSavedConcurrency(false), 2000);
+    },
+  });
+
   // Sync local state with fetched company
   if (company && companyName === "") setCompanyName(company.name);
+  if (company && maxConcurrent === 1 && company.max_concurrent_agents !== 1) {
+    setMaxConcurrent(company.max_concurrent_agents);
+  }
 
   const firstProduct = products?.[0];
 
@@ -82,6 +97,57 @@ export default function SettingsPage() {
                 {savedCompany ? "Saved!" : "Save changes"}
               </Button>
             </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Agent concurrency */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Zap className="h-4 w-4 text-amber-400" />
+            Agent concurrency
+          </CardTitle>
+          <CardDescription>
+            How many agent jobs can run at the same time. Increase this to let
+            multiple tickets be worked on in parallel. Changes take effect
+            immediately — no restart required.
+          </CardDescription>
+        </CardHeader>
+        {companyLoading ? (
+          <Spinner />
+        ) : (
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-zinc-300">
+                  Max concurrent agents
+                </label>
+                <span className="text-sm font-semibold text-white w-6 text-center">
+                  {maxConcurrent}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                step={1}
+                value={maxConcurrent}
+                onChange={(e) => setMaxConcurrent(Number(e.target.value))}
+                className="w-full accent-amber-400 cursor-pointer"
+              />
+              <div className="flex justify-between text-[10px] text-zinc-600">
+                <span>1 (sequential)</span>
+                <span>10 (max)</span>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => updateConcurrencyMutation.mutate()}
+              isLoading={updateConcurrencyMutation.isPending}
+            >
+              {savedConcurrency ? "Saved!" : "Save"}
+            </Button>
           </div>
         )}
       </Card>

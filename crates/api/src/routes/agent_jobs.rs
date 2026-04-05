@@ -12,7 +12,7 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     Json,
 };
-use domain::{AgentJob, AgentRun, AgentTicketRunPayload, JobKind};
+use domain::{AgentJob, AgentRun, AgentTicketRunPayload, JobKind, RunState};
 use futures_util::StreamExt as _;
 use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
@@ -50,9 +50,17 @@ pub async fn enqueue_ticket_run(
     Path((company_id, _workspace_id, ticket_id)): Path<(Uuid, Uuid, Uuid)>,
     Json(input): Json<EnqueueRunInput>,
 ) -> ApiResult<(StatusCode, Json<AgentJob>)> {
-    db::company::get_company(&state.pool, company_id)
+    let company = db::company::get_company(&state.pool, company_id)
         .await?
         .ok_or(ApiError::NotFound)?;
+
+    if company.run_state == RunState::Stopped {
+        db::company::set_run_state(&state.pool, company_id, RunState::Running)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+    } else if company.run_state == RunState::Terminated {
+        return Err(ApiError::NotFound);
+    }
 
     let payload = serde_json::to_value(AgentTicketRunPayload {
         ticket_id,

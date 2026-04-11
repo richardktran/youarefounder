@@ -28,6 +28,10 @@ export interface Company {
   run_state: RunState;
   /** Maximum number of agent jobs that may run concurrently (default 1). */
   max_concurrent_agents: number;
+  /** Founder-written standing instructions for ticket work; injected into every agent run. */
+  agent_ticket_memory: string | null;
+  /** Founder-written standing instructions for decisions / escalations; injected into every agent run. */
+  agent_decision_memory: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -174,6 +178,15 @@ export async function getBootstrap(): Promise<BootstrapStatus> {
   return data;
 }
 
+/** Must match `RESET_INSTALL_CONFIRM_PHRASE` in `crates/domain/src/company.rs`. */
+export const RESET_INSTALL_CONFIRM_PHRASE = "DELETE ALL LOCAL DATA" as const;
+
+export async function resetInstall(confirmPhrase: string): Promise<void> {
+  await apiClient.post("/system/reset-install", {
+    confirm_phrase: confirmPhrase,
+  });
+}
+
 export async function listCompanies(): Promise<Company[]> {
   const { data } = await apiClient.get<Company[]>("/companies");
   return data;
@@ -194,7 +207,13 @@ export async function createCompany(input: {
 
 export async function updateCompany(
   id: string,
-  input: Partial<{ name: string; onboarding_complete: boolean; max_concurrent_agents: number }>
+  input: Partial<{
+    name: string;
+    onboarding_complete: boolean;
+    max_concurrent_agents: number;
+    agent_ticket_memory: string;
+    agent_decision_memory: string;
+  }>
 ): Promise<Company> {
   const { data } = await apiClient.patch<Company>(`/companies/${id}`, input);
   return data;
@@ -481,6 +500,12 @@ export interface Ticket {
   workspace_id: string;
   title: string;
   description: string | null;
+  /** Checklist for marking this ticket done (aligns agents and humans). */
+  definition_of_done: string | null;
+  /** Founder-only instructions for this ticket; injected into agent prompts. */
+  founder_memory: string | null;
+  /** Short completion note when done (optional; used in cross-ticket snapshots). */
+  outcome_summary: string | null;
   ticket_type: TicketType;
   status: TicketStatus;
   priority: TicketPriority;
@@ -500,10 +525,16 @@ export interface TicketComment {
 
 export async function listTickets(
   companyId: string,
-  workspaceId: string
+  workspaceId: string,
+  options?: { rootsOnly?: boolean; parentTicketId?: string }
 ): Promise<Ticket[]> {
+  const params = new URLSearchParams();
+  if (options?.rootsOnly) params.set("roots_only", "true");
+  if (options?.parentTicketId)
+    params.set("parent_ticket_id", options.parentTicketId);
+  const q = params.toString();
   const { data } = await apiClient.get<Ticket[]>(
-    `/companies/${companyId}/workspaces/${workspaceId}/tickets`
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets${q ? `?${q}` : ""}`
   );
   return data;
 }
@@ -525,6 +556,9 @@ export async function createTicket(
   input: {
     title: string;
     description?: string;
+    definition_of_done?: string;
+    founder_memory?: string;
+    outcome_summary?: string;
     ticket_type?: TicketType;
     status?: TicketStatus;
     priority?: TicketPriority;
@@ -546,6 +580,9 @@ export async function updateTicket(
   input: Partial<{
     title: string;
     description: string;
+    definition_of_done: string | null;
+    founder_memory: string | null;
+    outcome_summary: string | null;
     ticket_type: TicketType;
     status: TicketStatus;
     priority: TicketPriority;
@@ -582,6 +619,110 @@ export async function createComment(
     input
   );
   return data;
+}
+
+// ─── Product brain & ticket references ────────────────────────────────────────
+
+export type ProductBrainPendingStatus = "pending" | "rejected" | "promoted";
+
+export interface ProductBrainEntry {
+  id: string;
+  company_id: string;
+  workspace_id: string | null;
+  body: string;
+  source_ticket_id: string | null;
+  created_at: string;
+}
+
+export interface ProductBrainPending {
+  id: string;
+  company_id: string;
+  workspace_id: string | null;
+  body: string;
+  source_ticket_id: string | null;
+  status: ProductBrainPendingStatus;
+  proposed_at: string;
+  reviewed_at: string | null;
+}
+
+export interface TicketReference {
+  from_ticket_id: string;
+  to_ticket_id: string;
+  note: string | null;
+  created_at: string;
+}
+
+export async function listProductBrainEntries(
+  companyId: string
+): Promise<ProductBrainEntry[]> {
+  const { data } = await apiClient.get<ProductBrainEntry[]>(
+    `/companies/${companyId}/product-brain/entries`
+  );
+  return data;
+}
+
+export async function listProductBrainPending(
+  companyId: string
+): Promise<ProductBrainPending[]> {
+  const { data } = await apiClient.get<ProductBrainPending[]>(
+    `/companies/${companyId}/product-brain/pending`
+  );
+  return data;
+}
+
+export async function approveProductBrainPending(
+  companyId: string,
+  pendingId: string,
+  input?: { body?: string | null }
+): Promise<ProductBrainEntry> {
+  const { data } = await apiClient.post<ProductBrainEntry>(
+    `/companies/${companyId}/product-brain/pending/${pendingId}/approve`,
+    input ?? {}
+  );
+  return data;
+}
+
+export async function rejectProductBrainPending(
+  companyId: string,
+  pendingId: string
+): Promise<void> {
+  await apiClient.post(
+    `/companies/${companyId}/product-brain/pending/${pendingId}/reject`
+  );
+}
+
+export async function listTicketReferences(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string
+): Promise<TicketReference[]> {
+  const { data } = await apiClient.get<TicketReference[]>(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/references`
+  );
+  return data;
+}
+
+export async function createTicketReference(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string,
+  input: { to_ticket_id: string; note?: string | null }
+): Promise<void> {
+  await apiClient.post(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/references`,
+    input
+  );
+}
+
+export async function deleteTicketReference(
+  companyId: string,
+  workspaceId: string,
+  ticketId: string,
+  toTicketId: string
+): Promise<void> {
+  await apiClient.delete(
+    `/companies/${companyId}/workspaces/${workspaceId}/tickets/${ticketId}/references/${toTicketId}`
+  );
 }
 
 // ─── Org chart ────────────────────────────────────────────────────────────────
@@ -671,6 +812,15 @@ export async function declineHiringProposal(
   return data;
 }
 
+export async function deleteHiringProposal(
+  companyId: string,
+  proposalId: string
+): Promise<void> {
+  await apiClient.delete(
+    `/companies/${companyId}/hiring-proposals/${proposalId}`
+  );
+}
+
 // ─── Decision requests (Phase 6) ─────────────────────────────────────────────
 
 export type DecisionStatus = "pending_founder" | "answered";
@@ -678,6 +828,7 @@ export type DecisionStatus = "pending_founder" | "answered";
 export interface DecisionRequest {
   id: string;
   company_id: string;
+  workspace_id: string;
   ticket_id: string;
   raised_by_person_id: string | null;
   question: string;
@@ -719,6 +870,15 @@ export async function answerDecisionRequest(
     { founder_answer: founderAnswer }
   );
   return data;
+}
+
+export async function deleteDecisionRequest(
+  companyId: string,
+  decisionId: string
+): Promise<void> {
+  await apiClient.delete(
+    `/companies/${companyId}/decision-requests/${decisionId}`
+  );
 }
 
 // ─── Simulation controls (Phase 4) ────────────────────────────────────────────

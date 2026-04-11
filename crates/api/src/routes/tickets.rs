@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use db::job::{PRIORITY_CO_FOUNDER, PRIORITY_EXECUTIVE, PRIORITY_SPECIALIST};
 use domain::{
     AgentTicketRunPayload, CreateCommentInput, CreateTicketInput, JobKind, PersonKind, RoleType,
-    RunState, Ticket, TicketComment, UpdateTicketInput,
+    RunState, Ticket, TicketComment, TicketStatus, UpdateTicketInput,
 };
 use tracing::info;
 use uuid::Uuid;
@@ -16,14 +16,56 @@ use crate::{
     state::AppState,
 };
 
+/// Subtasks may attach only to top-level tickets (single level of nesting).
+async fn ensure_subtask_parent_allowed(
+    state: &AppState,
+    workspace_id: Uuid,
+    parent_id: Uuid,
+) -> ApiResult<()> {
+    let parent = db::ticket::get_ticket(&state.pool, parent_id)
+        .await
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| ApiError::BadRequest("parent ticket not found".into()))?;
+    if parent.workspace_id != workspace_id {
+        return Err(ApiError::BadRequest(
+            "parent ticket is not in this workspace".into(),
+        ));
+    }
+    if parent.parent_ticket_id.is_some() {
+        return Err(ApiError::BadRequest(
+            "only one level of subtasks is allowed".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Default, serde::Deserialize)]
+pub struct ListTicketsQuery {
+    /// When true, return only tickets with no parent (Kanban top-level cards).
+    #[serde(default)]
+    roots_only: bool,
+    /// When set, return only direct children of this ticket (subtasks).
+    parent_ticket_id: Option<Uuid>,
+}
+
 // ─── Tickets ──────────────────────────────────────────────────────────────────
 
 /// `GET /v1/companies/:id/workspaces/:workspace_id/tickets`
+///
+/// Query: `roots_only=true` — only top-level tickets. `parent_ticket_id=<uuid>` — subtasks of that ticket.
 pub async fn list_tickets(
     State(state): State<AppState>,
     Path((_company_id, workspace_id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<ListTicketsQuery>,
 ) -> ApiResult<Json<Vec<Ticket>>> {
-    let tickets = db::ticket::list_tickets(&state.pool, workspace_id).await?;
+    let filter = if let Some(pid) = q.parent_ticket_id {
+        db::ticket::TicketListFilter::ChildrenOf(pid)
+    } else if q.roots_only {
+        db::ticket::TicketListFilter::RootsOnly
+    } else {
+        db::ticket::TicketListFilter::All
+    };
+    let tickets = db::ticket::list_tickets(&state.pool, workspace_id, filter).await?;
     Ok(Json(tickets))
 }
 
@@ -51,6 +93,10 @@ pub async fn create_ticket(
         return Err(ApiError::BadRequest("ticket title is required".into()));
     }
 
+    if let Some(pid) = input.parent_ticket_id {
+        ensure_subtask_parent_allowed(&state, workspace_id, pid).await?;
+    }
+
     let ticket = db::ticket::create_ticket(&state.pool, workspace_id, input).await?;
 
     // Auto-trigger agents for the new ticket.
@@ -62,12 +108,21 @@ pub async fn create_ticket(
 /// `PATCH /v1/companies/:id/workspaces/:workspace_id/tickets/:ticket_id`
 ///
 /// After updating the ticket, auto-enqueues an agent run for any AI assignee
-/// if the company is running (e.g. a new assignee was just set).
+/// if the company is running, unless the ticket is done or cancelled.
 pub async fn update_ticket(
     State(state): State<AppState>,
     Path((company_id, workspace_id, ticket_id)): Path<(Uuid, Uuid, Uuid)>,
     Json(input): Json<UpdateTicketInput>,
 ) -> ApiResult<Json<Ticket>> {
+    if let Some(pid) = input.parent_ticket_id {
+        if pid == ticket_id {
+            return Err(ApiError::BadRequest(
+                "ticket cannot be its own parent".into(),
+            ));
+        }
+        ensure_subtask_parent_allowed(&state, workspace_id, pid).await?;
+    }
+
     let ticket = db::ticket::update_ticket(&state.pool, ticket_id, input)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -104,9 +159,9 @@ pub async fn list_comments(
 
 /// `POST /v1/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/comments`
 ///
-/// After saving the comment, auto-continues the agent loop whenever a human
-/// posts: if the ticket has an AI assignee and the company is running, the
-/// agent is re-enqueued regardless of the current ticket status.
+/// After saving the comment, auto-continues the agent loop when a human posts
+/// on an open ticket: if the ticket has an AI assignee and the company is
+/// running, the agent is re-enqueued (not for done or cancelled tickets).
 pub async fn create_comment(
     State(state): State<AppState>,
     Path((company_id, workspace_id, ticket_id)): Path<(Uuid, Uuid, Uuid)>,
@@ -128,7 +183,8 @@ pub async fn create_comment(
 // ─── Auto-trigger helpers ─────────────────────────────────────────────────────
 
 /// Enqueue agent runs for all AI members of a workspace when the company is
-/// running. Called on ticket create and ticket update.
+/// running. Called on ticket create and ticket update. No-ops when the ticket
+/// is done or cancelled.
 async fn maybe_trigger_agents_for_ticket(
     state: &AppState,
     company_id: Uuid,
@@ -165,6 +221,14 @@ async fn maybe_trigger_agents_for_ticket(
         _ => return,
     };
 
+    // Closed tickets should not enqueue new agent work.
+    if matches!(
+        ticket.status,
+        TicketStatus::Done | TicketStatus::Cancelled
+    ) {
+        return;
+    }
+
     // If the ticket has a specific AI assignee, enqueue only for them.
     if let Some(assignee_id) = ticket.assignee_person_id {
         if let Ok(Some(person)) = db::person::get_person(&state.pool, company_id, assignee_id).await {
@@ -197,8 +261,8 @@ async fn maybe_trigger_agents_for_ticket(
 /// 2. The ticket has an **AI agent** assignee.
 /// 3. The company is in **running** state.
 ///
-/// Note: the ticket status restriction has been removed — agents respond to
-/// human messages regardless of whether the ticket is blocked or not.
+/// Agents still respond when the ticket is blocked, but not when it is done
+/// or cancelled.
 async fn maybe_continue_agent(
     state: &AppState,
     company_id: Uuid,

@@ -231,3 +231,21 @@ pub async fn decline_proposal(
 
     Ok(row_to_proposal(&row))
 }
+
+/// Remove a pending hiring proposal (dismiss without accept/decline).
+pub async fn delete_proposal(
+    pool: &PgPool,
+    company_id: Uuid,
+    proposal_id: Uuid,
+) -> Result<bool> {
+    let r = sqlx::query(
+        "DELETE FROM hiring_proposals
+         WHERE id = $1 AND company_id = $2 AND status = $3",
+    )
+    .bind(proposal_id)
+    .bind(company_id)
+    .bind(ProposalStatus::PendingFounder.to_string())
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}

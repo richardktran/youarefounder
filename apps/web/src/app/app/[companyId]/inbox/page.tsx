@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -15,16 +16,19 @@ import {
   MessageSquare,
   HelpCircle,
   ExternalLink,
+  Trash2,
 } from "lucide-react";
 import {
+  getCompany,
   listHiringProposals,
   createHiringProposal,
   acceptHiringProposal,
   declineHiringProposal,
+  deleteDecisionRequest,
+  deleteHiringProposal,
   listDecisionRequests,
   answerDecisionRequest,
   listAiProfiles,
-  listWorkspaces,
   type HiringProposal,
   type DecisionRequest,
   type ProposalStatus,
@@ -114,11 +118,13 @@ export default function InboxPage() {
   const { data: decisions, isLoading: decisionsLoading } = useQuery({
     queryKey: ["decision-requests", companyId],
     queryFn: () => listDecisionRequests(companyId),
+    refetchInterval: 5000,
   });
 
   const { data: proposals, isLoading: proposalsLoading } = useQuery({
     queryKey: ["hiring-proposals", companyId],
     queryFn: () => listHiringProposals(companyId),
+    refetchInterval: 5000,
   });
 
   const { data: aiProfiles } = useQuery({
@@ -126,10 +132,9 @@ export default function InboxPage() {
     queryFn: () => listAiProfiles(companyId),
   });
 
-  // Load workspaces for linking to tickets
-  const { data: workspaces } = useQuery({
-    queryKey: ["workspaces", companyId],
-    queryFn: () => listWorkspaces(companyId),
+  const { data: company } = useQuery({
+    queryKey: ["company", companyId],
+    queryFn: () => getCompany(companyId),
   });
 
   // ── Mutations ─────────────────────────────────────────────────────────────
@@ -161,6 +166,20 @@ export default function InboxPage() {
       queryClient.invalidateQueries({ queryKey: ["hiring-proposals", companyId] });
       setDecliningId(null);
       setDeclineReason("");
+    },
+  });
+
+  const deleteDecisionMutation = useMutation({
+    mutationFn: (decisionId: string) => deleteDecisionRequest(companyId, decisionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["decision-requests", companyId] });
+    },
+  });
+
+  const deleteProposalMutation = useMutation({
+    mutationFn: (proposalId: string) => deleteHiringProposal(companyId, proposalId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["hiring-proposals", companyId] });
     },
   });
 
@@ -228,6 +247,26 @@ export default function InboxPage() {
     }
   }
 
+  function confirmDeleteDecision(d: DecisionRequest) {
+    const msg =
+      d.status === "pending_founder"
+        ? "Remove this decision? The related ticket will be unblocked."
+        : "Remove this answered decision from the inbox?";
+    if (!window.confirm(msg)) return;
+    deleteDecisionMutation.mutate(d.id);
+  }
+
+  function confirmDeleteProposal(p: HiringProposal) {
+    if (
+      !window.confirm(
+        "Delete this hiring proposal? This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    deleteProposalMutation.mutate(p.id);
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="p-8 max-w-3xl mx-auto">
@@ -261,6 +300,18 @@ export default function InboxPage() {
           </Button>
         )}
       </div>
+
+      {mainTab === "decisions" && company?.agent_decision_memory ? (
+        <div className="mb-6 rounded-lg border border-violet-900/50 bg-violet-950/25 px-4 py-3 text-sm">
+          <p className="text-[10px] font-semibold text-violet-400 uppercase tracking-wider mb-1.5">
+            Decision memory (injected into every agent run)
+          </p>
+          <p className="text-zinc-300 whitespace-pre-wrap">{company.agent_decision_memory}</p>
+          <p className="text-[10px] text-zinc-600 mt-2">
+            Edit in Settings → Agent memory → Decisions & escalations.
+          </p>
+        </div>
+      ) : null}
 
       {/* Main tabs */}
       <div className="flex gap-1 mb-6 border-b border-zinc-800">
@@ -319,7 +370,6 @@ export default function InboxPage() {
                   key={decision.id}
                   decision={decision}
                   companyId={companyId}
-                  workspaces={workspaces ?? []}
                   expanded={expandedDecisionId === decision.id}
                   onToggleExpand={() =>
                     setExpandedDecisionId(expandedDecisionId === decision.id ? null : decision.id)
@@ -333,6 +383,11 @@ export default function InboxPage() {
                     setAnswerText("");
                   }}
                   isAnswering={answerMutation.isPending && answeringId === decision.id}
+                  onDelete={() => confirmDeleteDecision(decision)}
+                  isDeleting={
+                    deleteDecisionMutation.isPending &&
+                    deleteDecisionMutation.variables === decision.id
+                  }
                 />
               ))}
             </div>
@@ -517,6 +572,11 @@ export default function InboxPage() {
                   }}
                   isAccepting={acceptMutation.isPending && acceptingId === proposal.id}
                   isDeclining={declineMutation.isPending && decliningId === proposal.id}
+                  onDelete={() => confirmDeleteProposal(proposal)}
+                  isDeleting={
+                    deleteProposalMutation.isPending &&
+                    deleteProposalMutation.variables === proposal.id
+                  }
                 />
               ))}
             </div>
@@ -532,7 +592,6 @@ export default function InboxPage() {
 interface DecisionCardProps {
   decision: DecisionRequest;
   companyId: string;
-  workspaces: { id: string; name: string }[];
   expanded: boolean;
   onToggleExpand: () => void;
   answeringThis: boolean;
@@ -541,12 +600,13 @@ interface DecisionCardProps {
   onAnswerTextChange: (v: string) => void;
   onCancelAnswer: () => void;
   isAnswering: boolean;
+  onDelete: () => void;
+  isDeleting: boolean;
 }
 
 function DecisionCard({
   decision,
   companyId,
-  workspaces: _workspaces,
   expanded,
   onToggleExpand,
   answeringThis,
@@ -555,6 +615,8 @@ function DecisionCard({
   onAnswerTextChange,
   onCancelAnswer,
   isAnswering,
+  onDelete,
+  isDeleting,
 }: DecisionCardProps) {
   const isPending = decision.status === "pending_founder";
 
@@ -599,14 +661,28 @@ function DecisionCard({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <a
-              href={`/app/${companyId}/workspaces`}
+            <Link
+              href={`/app/${companyId}/workspaces/${decision.workspace_id}/tickets/${decision.ticket_id}`}
               className="text-zinc-600 hover:text-zinc-400 transition-colors"
-              title="View ticket"
+              title="Open ticket"
             >
               <ExternalLink className="h-3.5 w-3.5" />
-            </a>
+            </Link>
             <button
+              type="button"
+              onClick={onDelete}
+              disabled={isDeleting}
+              className="text-zinc-500 hover:text-red-400 disabled:opacity-40 transition-colors"
+              title="Remove from inbox"
+            >
+              {isDeleting ? (
+                <Spinner className="h-3.5 w-3.5" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+            </button>
+            <button
+              type="button"
               onClick={onToggleExpand}
               className="text-zinc-500 hover:text-zinc-300 transition-colors"
             >
@@ -698,6 +774,8 @@ interface ProposalCardProps {
   onCancelAction: () => void;
   isAccepting: boolean;
   isDeclining: boolean;
+  onDelete: () => void;
+  isDeleting: boolean;
 }
 
 function ProposalCard({
@@ -715,6 +793,8 @@ function ProposalCard({
   onCancelAction,
   isAccepting,
   isDeclining,
+  onDelete,
+  isDeleting,
 }: ProposalCardProps) {
   const isPending = proposal.status === "pending_founder";
 
@@ -760,7 +840,23 @@ function ProposalCard({
             >
               {PROPOSAL_STATUS_LABELS[proposal.status]}
             </span>
+            {isPending && (
+              <button
+                type="button"
+                onClick={onDelete}
+                disabled={isDeleting}
+                className="text-zinc-500 hover:text-red-400 disabled:opacity-40 transition-colors"
+                title="Delete proposal"
+              >
+                {isDeleting ? (
+                  <Spinner className="h-3.5 w-3.5" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+              </button>
+            )}
             <button
+              type="button"
               onClick={onToggleExpand}
               className="text-zinc-500 hover:text-zinc-300 transition-colors"
             >

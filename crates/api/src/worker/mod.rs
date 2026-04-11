@@ -99,8 +99,8 @@ async fn try_claim_and_spawn(
                 }
             }
             Err(e) => {
-                error!(job_id = %job.id, err = %e, "job failed");
-                if let Err(db_err) = db::job::fail_job(&pool, job.id, &e.to_string()).await {
+                error!(job_id = %job.id, "job failed: {:#}", e);
+                if let Err(db_err) = db::job::fail_job(&pool, job.id, &format!("{:#}", e)).await {
                     error!(job_id = %job.id, err = %db_err, "failed to record job failure");
                 }
             }

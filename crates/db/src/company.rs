@@ -16,6 +16,8 @@ fn row_to_company(row: &PgRow) -> Company {
             .parse::<RunState>()
             .unwrap_or(RunState::Stopped),
         max_concurrent_agents: row.get("max_concurrent_agents"),
+        agent_ticket_memory: row.get("agent_ticket_memory"),
+        agent_decision_memory: row.get("agent_decision_memory"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
@@ -46,7 +48,8 @@ pub async fn get_bootstrap_status(pool: &PgPool) -> Result<BootstrapStatus> {
 
 pub async fn list_companies(pool: &PgPool) -> Result<Vec<Company>> {
     let rows = sqlx::query(
-        "SELECT id, name, slug, onboarding_complete, run_state, max_concurrent_agents, created_at, updated_at
+        "SELECT id, name, slug, onboarding_complete, run_state, max_concurrent_agents,
+                agent_ticket_memory, agent_decision_memory, created_at, updated_at
          FROM companies
          WHERE run_state != 'terminated'
          ORDER BY created_at ASC",
@@ -59,7 +62,8 @@ pub async fn list_companies(pool: &PgPool) -> Result<Vec<Company>> {
 
 pub async fn get_company(pool: &PgPool, company_id: Uuid) -> Result<Option<Company>> {
     let row = sqlx::query(
-        "SELECT id, name, slug, onboarding_complete, run_state, max_concurrent_agents, created_at, updated_at
+        "SELECT id, name, slug, onboarding_complete, run_state, max_concurrent_agents,
+                agent_ticket_memory, agent_decision_memory, created_at, updated_at
          FROM companies
          WHERE id = $1",
     )
@@ -84,7 +88,8 @@ pub async fn create_company(pool: &PgPool, input: CreateCompanyInput) -> Result<
     let company_row = sqlx::query(
         "INSERT INTO companies (name, slug)
          VALUES ($1, $2)
-         RETURNING id, name, slug, onboarding_complete, run_state, max_concurrent_agents, created_at, updated_at",
+         RETURNING id, name, slug, onboarding_complete, run_state, max_concurrent_agents,
+                   agent_ticket_memory, agent_decision_memory, created_at, updated_at",
     )
     .bind(&input.name)
     .bind(&slug)
@@ -124,15 +129,20 @@ pub async fn update_company(
              onboarding_complete    = COALESCE($3, onboarding_complete),
              run_state              = COALESCE($4, run_state),
              max_concurrent_agents  = COALESCE($5, max_concurrent_agents),
+             agent_ticket_memory    = COALESCE($6, agent_ticket_memory),
+             agent_decision_memory  = COALESCE($7, agent_decision_memory),
              updated_at             = NOW()
          WHERE id = $1
-         RETURNING id, name, slug, onboarding_complete, run_state, max_concurrent_agents, created_at, updated_at",
+         RETURNING id, name, slug, onboarding_complete, run_state, max_concurrent_agents,
+                   agent_ticket_memory, agent_decision_memory, created_at, updated_at",
     )
     .bind(company_id)
     .bind(&input.name)
     .bind(input.onboarding_complete)
     .bind(run_state_str)
     .bind(input.max_concurrent_agents)
+    .bind(&input.agent_ticket_memory)
+    .bind(&input.agent_decision_memory)
     .fetch_optional(pool)
     .await?;
 
@@ -164,4 +174,10 @@ pub async fn terminate_company(pool: &PgPool, company_id: Uuid) -> Result<bool> 
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Delete every company row (and all cascade-deleted data). Returns rows removed.
+pub async fn delete_all_companies(pool: &PgPool) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM companies").execute(pool).await?;
+    Ok(result.rows_affected())
 }

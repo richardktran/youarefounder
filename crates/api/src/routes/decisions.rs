@@ -111,3 +111,17 @@ pub async fn answer_decision(
 
     Ok(Json(decision))
 }
+
+/// `DELETE /v1/companies/:id/decision-requests/:decision_id`
+pub async fn delete_decision(
+    State(state): State<AppState>,
+    Path((company_id, decision_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    let deleted =
+        db::decision::delete_decision_request(&state.pool, company_id, decision_id).await?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}

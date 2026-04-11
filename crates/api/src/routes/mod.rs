@@ -5,9 +5,11 @@ pub mod companies;
 pub mod decisions;
 pub mod hiring;
 pub mod people;
+pub mod product_brain;
 pub mod products;
 pub mod providers;
 pub mod simulation;
+pub mod system;
 pub mod tickets;
 pub mod workspace_members;
 pub mod workspaces;
@@ -21,6 +23,10 @@ pub fn v1_router() -> Router<AppState> {
     Router::new()
         // System
         .route("/bootstrap", get(bootstrap::get_bootstrap))
+        .route(
+            "/system/reset-install",
+            axum::routing::post(system::reset_install),
+        )
         // AI providers meta (Phase 1: Ollama only)
         .route("/ai-providers", get(providers::list_providers))
         .route(
@@ -71,6 +77,23 @@ pub fn v1_router() -> Router<AppState> {
             "/companies/:id/products/:product_id",
             get(products::get_product).patch(products::update_product),
         )
+        // Product brain (founder-reviewed knowledge + ticket references)
+        .route(
+            "/companies/:id/product-brain/entries",
+            get(product_brain::list_brain_entries),
+        )
+        .route(
+            "/companies/:id/product-brain/pending",
+            get(product_brain::list_pending_brain),
+        )
+        .route(
+            "/companies/:id/product-brain/pending/:pending_id/approve",
+            axum::routing::post(product_brain::approve_pending_brain),
+        )
+        .route(
+            "/companies/:id/product-brain/pending/:pending_id/reject",
+            axum::routing::post(product_brain::reject_pending_brain),
+        )
         // AI profiles (nested under company)
         .route(
             "/companies/:id/ai-profiles",
@@ -107,7 +130,7 @@ pub fn v1_router() -> Router<AppState> {
         )
         .route(
             "/companies/:id/hiring-proposals/:proposal_id",
-            get(hiring::get_proposal),
+            get(hiring::get_proposal).delete(hiring::delete_proposal),
         )
         .route(
             "/companies/:id/hiring-proposals/:proposal_id/accept",
@@ -124,7 +147,7 @@ pub fn v1_router() -> Router<AppState> {
         )
         .route(
             "/companies/:id/decision-requests/:decision_id",
-            get(decisions::get_decision),
+            get(decisions::get_decision).delete(decisions::delete_decision),
         )
         .route(
             "/companies/:id/decision-requests/:decision_id/answer",
@@ -156,6 +179,14 @@ pub fn v1_router() -> Router<AppState> {
         .route(
             "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/comments",
             get(tickets::list_comments).post(tickets::create_comment),
+        )
+        .route(
+            "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/references",
+            get(product_brain::list_ticket_references).post(product_brain::create_ticket_reference),
+        )
+        .route(
+            "/companies/:id/workspaces/:workspace_id/tickets/:ticket_id/references/:to_ticket_id",
+            axum::routing::delete(product_brain::delete_ticket_reference),
         )
         // Agent runs for a ticket (Phase 4)
         .route(

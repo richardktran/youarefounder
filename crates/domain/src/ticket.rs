@@ -133,6 +133,12 @@ pub struct Ticket {
     pub workspace_id: Uuid,
     pub title: String,
     pub description: Option<String>,
+    /// Concrete criteria for marking this ticket done (agents and humans align on this).
+    pub definition_of_done: Option<String>,
+    /// Founder-only sticky instructions for this ticket; agents must follow alongside company memory.
+    pub founder_memory: Option<String>,
+    /// Short outcome / completion note when the ticket is done (for cross-ticket snapshots).
+    pub outcome_summary: Option<String>,
     pub ticket_type: TicketType,
     pub status: TicketStatus,
     pub priority: TicketPriority,
@@ -146,6 +152,9 @@ pub struct Ticket {
 pub struct CreateTicketInput {
     pub title: String,
     pub description: Option<String>,
+    pub definition_of_done: Option<String>,
+    pub founder_memory: Option<String>,
+    pub outcome_summary: Option<String>,
     pub ticket_type: Option<TicketType>,
     pub status: Option<TicketStatus>,
     pub priority: Option<TicketPriority>,
@@ -153,10 +162,13 @@ pub struct CreateTicketInput {
     pub parent_ticket_id: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateTicketInput {
     pub title: Option<String>,
     pub description: Option<String>,
+    pub definition_of_done: Option<String>,
+    pub founder_memory: Option<String>,
+    pub outcome_summary: Option<String>,
     pub ticket_type: Option<TicketType>,
     pub status: Option<TicketStatus>,
     pub priority: Option<TicketPriority>,

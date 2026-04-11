@@ -11,6 +11,7 @@ fn row_to_decision(row: &PgRow) -> DecisionRequest {
     DecisionRequest {
         id: row.get("id"),
         company_id: row.get("company_id"),
+        workspace_id: row.get("workspace_id"),
         ticket_id: row.get("ticket_id"),
         raised_by_person_id: row.get("raised_by_person_id"),
         question: row.get("question"),
@@ -31,11 +32,13 @@ pub async fn list_decision_requests(
 ) -> Result<Vec<DecisionRequest>> {
     let rows = if let Some(status) = status_filter {
         sqlx::query(
-            "SELECT id, company_id, ticket_id, raised_by_person_id, question,
-                    context_note, status, founder_answer, created_at, updated_at
-             FROM decision_requests
-             WHERE company_id = $1 AND status = $2
-             ORDER BY created_at DESC",
+            "SELECT dr.id, dr.company_id, t.workspace_id, dr.ticket_id, dr.raised_by_person_id,
+                    dr.question, dr.context_note, dr.status, dr.founder_answer,
+                    dr.created_at, dr.updated_at
+             FROM decision_requests dr
+             INNER JOIN tickets t ON t.id = dr.ticket_id
+             WHERE dr.company_id = $1 AND dr.status = $2
+             ORDER BY dr.created_at DESC",
         )
         .bind(company_id)
         .bind(status.to_string())
@@ -43,11 +46,13 @@ pub async fn list_decision_requests(
         .await?
     } else {
         sqlx::query(
-            "SELECT id, company_id, ticket_id, raised_by_person_id, question,
-                    context_note, status, founder_answer, created_at, updated_at
-             FROM decision_requests
-             WHERE company_id = $1
-             ORDER BY created_at DESC",
+            "SELECT dr.id, dr.company_id, t.workspace_id, dr.ticket_id, dr.raised_by_person_id,
+                    dr.question, dr.context_note, dr.status, dr.founder_answer,
+                    dr.created_at, dr.updated_at
+             FROM decision_requests dr
+             INNER JOIN tickets t ON t.id = dr.ticket_id
+             WHERE dr.company_id = $1
+             ORDER BY dr.created_at DESC",
         )
         .bind(company_id)
         .fetch_all(pool)
@@ -63,10 +68,12 @@ pub async fn get_decision_request(
     decision_id: Uuid,
 ) -> Result<Option<DecisionRequest>> {
     let row = sqlx::query(
-        "SELECT id, company_id, ticket_id, raised_by_person_id, question,
-                context_note, status, founder_answer, created_at, updated_at
-         FROM decision_requests
-         WHERE id = $1 AND company_id = $2",
+        "SELECT dr.id, dr.company_id, t.workspace_id, dr.ticket_id, dr.raised_by_person_id,
+                dr.question, dr.context_note, dr.status, dr.founder_answer,
+                dr.created_at, dr.updated_at
+         FROM decision_requests dr
+         INNER JOIN tickets t ON t.id = dr.ticket_id
+         WHERE dr.id = $1 AND dr.company_id = $2",
     )
     .bind(decision_id)
     .bind(company_id)
@@ -87,18 +94,49 @@ pub async fn create_decision_request(
 
     let mut tx = pool.begin().await?;
 
-    let row = sqlx::query(
-        "INSERT INTO decision_requests
-             (company_id, ticket_id, raised_by_person_id, question, context_note)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, company_id, ticket_id, raised_by_person_id, question,
-                   context_note, status, founder_answer, created_at, updated_at",
+    // Reject cross-company mistakes early (clearer than a silent insert failure).
+    let ticket_company: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT w.company_id
+             FROM tickets t
+             INNER JOIN workspaces w ON w.id = t.workspace_id
+             WHERE t.id = $1"#,
+    )
+    .bind(input.ticket_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let ticket_company =
+        ticket_company.ok_or_else(|| anyhow!("ticket not found for decision request"))?;
+    if ticket_company != company_id {
+        return Err(anyhow!(
+            "ticket {} belongs to a different company than the request context",
+            input.ticket_id
+        ));
+    }
+
+    let id_row = sqlx::query(
+        r#"INSERT INTO decision_requests (company_id, ticket_id, raised_by_person_id, question, context_note)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id"#,
     )
     .bind(company_id)
     .bind(input.ticket_id)
     .bind(input.raised_by_person_id)
     .bind(input.question.trim())
     .bind(&input.context_note)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let new_id: Uuid = id_row.get("id");
+
+    let row = sqlx::query(
+        r#"SELECT dr.id, dr.company_id, t.workspace_id, dr.ticket_id, dr.raised_by_person_id, dr.question,
+                  dr.context_note, dr.status, dr.founder_answer, dr.created_at, dr.updated_at
+           FROM decision_requests dr
+           INNER JOIN tickets t ON t.id = dr.ticket_id
+           WHERE dr.id = $1"#,
+    )
+    .bind(new_id)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -132,13 +170,16 @@ pub async fn answer_decision_request(
     let mut tx = pool.begin().await?;
 
     let row = sqlx::query(
-        "UPDATE decision_requests
+        r#"UPDATE decision_requests dr
          SET status = 'answered',
              founder_answer = $3,
              updated_at = NOW()
-         WHERE id = $1 AND company_id = $2 AND status = 'pending_founder'
-         RETURNING id, company_id, ticket_id, raised_by_person_id, question,
-                   context_note, status, founder_answer, created_at, updated_at",
+         FROM tickets t
+         WHERE dr.id = $1 AND dr.company_id = $2 AND dr.ticket_id = t.id
+           AND dr.status = 'pending_founder'
+         RETURNING dr.id, dr.company_id, t.workspace_id, dr.ticket_id, dr.raised_by_person_id,
+                   dr.question, dr.context_note, dr.status, dr.founder_answer,
+                   dr.created_at, dr.updated_at"#,
     )
     .bind(decision_id)
     .bind(company_id)
@@ -176,6 +217,19 @@ pub async fn answer_decision_request(
     Ok(decision)
 }
 
+/// Delete founder decision requests still pending for this ticket (e.g. when the
+/// ticket is moved to done or cancelled).
+pub async fn delete_pending_decisions_for_ticket(pool: &PgPool, ticket_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM decision_requests
+         WHERE ticket_id = $1 AND status = 'pending_founder'",
+    )
+    .bind(ticket_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Check whether a ticket has any open (pending_founder) decision requests.
 pub async fn has_open_decision(pool: &PgPool, ticket_id: Uuid) -> Result<bool> {
     let row = sqlx::query(
@@ -188,4 +242,54 @@ pub async fn has_open_decision(pool: &PgPool, ticket_id: Uuid) -> Result<bool> {
     .await?;
 
     Ok(row.is_some())
+}
+
+/// Remove a decision request from the inbox. If it was still pending, unblocks the ticket.
+pub async fn delete_decision_request(
+    pool: &PgPool,
+    company_id: Uuid,
+    decision_id: Uuid,
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+
+    let row = sqlx::query(
+        r#"SELECT dr.ticket_id, dr.status
+           FROM decision_requests dr
+           WHERE dr.id = $1 AND dr.company_id = $2"#,
+    )
+    .bind(decision_id)
+    .bind(company_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(row) = row else {
+        tx.commit().await?;
+        return Ok(false);
+    };
+
+    let ticket_id: Uuid = row.get("ticket_id");
+    let status: String = row.get("status");
+
+    sqlx::query(
+        "DELETE FROM decision_requests WHERE id = $1 AND company_id = $2",
+    )
+    .bind(decision_id)
+    .bind(company_id)
+    .execute(&mut *tx)
+    .await?;
+
+    if status == DecisionStatus::PendingFounder.to_string() {
+        sqlx::query(
+            "UPDATE tickets SET status = $1, updated_at = NOW()
+             WHERE id = $2 AND status = $3",
+        )
+        .bind(TicketStatus::InProgress.to_string())
+        .bind(ticket_id)
+        .bind(TicketStatus::Blocked.to_string())
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(true)
 }

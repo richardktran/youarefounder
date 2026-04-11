@@ -6,6 +6,7 @@ pub mod hiring;
 pub mod job;
 pub mod person;
 pub mod product;
+pub mod product_brain;
 pub mod ticket;
 pub mod workspace;
 pub mod workspace_member;

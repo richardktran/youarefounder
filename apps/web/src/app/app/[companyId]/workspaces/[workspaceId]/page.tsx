@@ -354,7 +354,8 @@ export default function WorkspacePage() {
 
   const { data: tickets = [], isLoading: ticketsLoading } = useQuery({
     queryKey: ["tickets", companyId, workspaceId],
-    queryFn: () => listTickets(companyId, workspaceId),
+    queryFn: () =>
+      listTickets(companyId, workspaceId, { rootsOnly: true }),
   });
 
   const { data: wsMembers = [] } = useQuery({

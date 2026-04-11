@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,11 +18,16 @@ import Link from "next/link";
 import {
   getTicket,
   getWorkspace,
+  listTickets,
   listComments,
   createComment,
   updateTicket,
   listWorkspaceMembers,
   listTicketAgentRuns,
+  listTicketReferences,
+  createTicketReference,
+  deleteTicketReference,
+  type Ticket,
   type TicketStatus,
   type TicketPriority,
   type TicketType,
@@ -30,6 +35,7 @@ import {
   type AgentRun,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -68,6 +74,13 @@ export default function TicketPage() {
   const [commentBody, setCommentBody] = useState("");
   const [editingDesc, setEditingDesc] = useState(false);
   const [description, setDescription] = useState("");
+  const [editingDod, setEditingDod] = useState(false);
+  const [definitionOfDone, setDefinitionOfDone] = useState("");
+  const [editingFounderMem, setEditingFounderMem] = useState(false);
+  const [founderMemory, setFounderMemory] = useState("");
+  const [editingOutcome, setEditingOutcome] = useState(false);
+  const [outcomeSummary, setOutcomeSummary] = useState("");
+  const [refTargetId, setRefTargetId] = useState("");
 
   const { data: workspace } = useQuery({
     queryKey: ["workspace", workspaceId],
@@ -79,9 +92,26 @@ export default function TicketPage() {
     queryFn: () => getTicket(companyId, workspaceId, ticketId),
   });
 
+  const { data: parentTicket } = useQuery({
+    queryKey: ["ticket", ticket?.parent_ticket_id],
+    queryFn: () =>
+      getTicket(companyId, workspaceId, ticket!.parent_ticket_id!),
+    enabled: !!ticket?.parent_ticket_id,
+  });
+
+  const { data: subtasks = [] } = useQuery({
+    queryKey: ["ticket-subtasks", workspaceId, ticketId],
+    queryFn: () =>
+      listTickets(companyId, workspaceId, { parentTicketId: ticketId }),
+    enabled: !!ticket,
+    refetchInterval: 4000,
+  });
+
   const { data: comments, isLoading: commentsLoading } = useQuery({
     queryKey: ["comments", ticketId],
     queryFn: () => listComments(companyId, workspaceId, ticketId),
+    // AI comments are written during agent runs; keep in sync with run history without a full reload.
+    refetchInterval: 4000,
   });
 
   const { data: wsMembers = [] } = useQuery({
@@ -92,8 +122,24 @@ export default function TicketPage() {
   const { data: agentRuns } = useQuery({
     queryKey: ["agent-runs", ticketId],
     queryFn: () => listTicketAgentRuns(companyId, workspaceId, ticketId),
-    refetchInterval: 5000,
+    refetchInterval: 4000,
   });
+
+  const { data: ticketRefs = [] } = useQuery({
+    queryKey: ["ticket-refs", ticketId],
+    queryFn: () => listTicketReferences(companyId, workspaceId, ticketId),
+    enabled: !!ticket,
+  });
+
+  const prevAgentRunIds = useRef<string>("");
+  useEffect(() => {
+    const ids = agentRuns?.map((r) => r.id).join(",") ?? "";
+    if (!ids) return;
+    if (prevAgentRunIds.current && ids !== prevAgentRunIds.current) {
+      queryClient.invalidateQueries({ queryKey: ["comments", ticketId] });
+    }
+    prevAgentRunIds.current = ids;
+  }, [agentRuns, queryClient, ticketId]);
 
   const updateMutation = useMutation({
     mutationFn: (patch: Parameters<typeof updateTicket>[3]) =>
@@ -101,8 +147,35 @@ export default function TicketPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ticket", ticketId] });
       queryClient.invalidateQueries({ queryKey: ["tickets", companyId, workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["ticket-subtasks", workspaceId] });
+      const t = queryClient.getQueryData<Ticket>(["ticket", ticketId]);
+      if (t?.parent_ticket_id) {
+        queryClient.invalidateQueries({ queryKey: ["ticket", t.parent_ticket_id] });
+      }
     },
   });
+
+  const addRefMutation = useMutation({
+    mutationFn: (toId: string) =>
+      createTicketReference(companyId, workspaceId, ticketId, { to_ticket_id: toId.trim() }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ticket-refs", ticketId] });
+      setRefTargetId("");
+    },
+  });
+
+  const removeRefMutation = useMutation({
+    mutationFn: (toId: string) =>
+      deleteTicketReference(companyId, workspaceId, ticketId, toId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ticket-refs", ticketId] });
+    },
+  });
+
+  useEffect(() => {
+    if (!ticket) return;
+    setOutcomeSummary(ticket.outcome_summary ?? "");
+  }, [ticket?.id, ticket?.outcome_summary]);
 
   const commentMutation = useMutation({
     mutationFn: () =>
@@ -138,6 +211,18 @@ export default function TicketPage() {
         <ArrowLeft className="h-3.5 w-3.5" />
         {workspace?.name ?? "Workspace"}
       </Link>
+
+      {ticket.parent_ticket_id ? (
+        <div className="mb-4 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-sm">
+          <span className="text-zinc-500">Subtask of </span>
+          <Link
+            href={`/app/${companyId}/workspaces/${workspaceId}/tickets/${ticket.parent_ticket_id}`}
+            className="text-amber-400/90 hover:text-amber-300 font-medium"
+          >
+            {parentTicket?.title ?? "Parent task"}
+          </Link>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_260px]">
         {/* Main column */}
@@ -216,6 +301,288 @@ export default function TicketPage() {
                   </p>
                 )}
               </div>
+            )}
+          </section>
+
+          {/* Definition of done */}
+          <section className="space-y-2">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Definition of done
+            </h2>
+            <p className="text-[11px] text-zinc-600 -mt-1 mb-1">
+              Concrete checks before this ticket should be marked complete. Agents use this to know when to set status to done.
+            </p>
+            {editingDod ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={definitionOfDone}
+                  onChange={(e) => setDefinitionOfDone(e.target.value)}
+                  rows={4}
+                  autoFocus
+                  placeholder="- Criterion one&#10;- Criterion two"
+                />
+                <div className="flex gap-2 justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditingDod(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    isLoading={updateMutation.isPending}
+                    onClick={() => {
+                      updateMutation.mutate(
+                        { definition_of_done: definitionOfDone.trim() },
+                        { onSuccess: () => setEditingDod(false) }
+                      );
+                    }}
+                  >
+                    Save
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 cursor-pointer hover:border-amber-800/50 transition-colors min-h-[64px]"
+                onClick={() => {
+                  setDefinitionOfDone(ticket.definition_of_done ?? "");
+                  setEditingDod(true);
+                }}
+              >
+                {ticket.definition_of_done ? (
+                  <p className="text-sm text-zinc-300 whitespace-pre-wrap">
+                    {ticket.definition_of_done}
+                  </p>
+                ) : (
+                  <p className="text-sm text-zinc-600">
+                    Click to set definition of done (checklist for completion)…
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Outcome summary (optional; helps cross-ticket snapshots) */}
+          <section className="space-y-2">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Outcome summary
+            </h2>
+            <p className="text-[11px] text-zinc-600 -mt-1 mb-1">
+              Short note on what shipped or was decided. Included when other tickets reference this one.
+            </p>
+            {editingOutcome ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={outcomeSummary}
+                  onChange={(e) => setOutcomeSummary(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  placeholder="e.g. Chose Postgres + Drizzle; migration path documented in thread."
+                />
+                <div className="flex gap-2 justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditingOutcome(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    isLoading={updateMutation.isPending}
+                    onClick={() => {
+                      updateMutation.mutate(
+                        { outcome_summary: outcomeSummary.trim() || null },
+                        { onSuccess: () => setEditingOutcome(false) }
+                      );
+                    }}
+                  >
+                    Save
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="rounded-lg border border-zinc-800 bg-zinc-900/30 px-4 py-3 cursor-pointer hover:border-zinc-700 transition-colors min-h-[48px]"
+                onClick={() => {
+                  setOutcomeSummary(ticket.outcome_summary ?? "");
+                  setEditingOutcome(true);
+                }}
+              >
+                {ticket.outcome_summary ? (
+                  <p className="text-sm text-zinc-300 whitespace-pre-wrap">
+                    {ticket.outcome_summary}
+                  </p>
+                ) : (
+                  <p className="text-sm text-zinc-600">
+                    Click to add an outcome summary…
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Founder memory (this ticket) */}
+          <section className="space-y-2">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Founder memory
+            </h2>
+            <p className="text-[11px] text-zinc-600 -mt-1 mb-1">
+              Sticky instructions for agents on this ticket only. Shown in every agent run together with company memory in Settings.
+            </p>
+            {editingFounderMem ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={founderMemory}
+                  onChange={(e) => setFounderMemory(e.target.value)}
+                  rows={4}
+                  autoFocus
+                  placeholder="- Must align with Q4 roadmap doc&#10;- Do not escalate pricing without a draft&#10;- ..."
+                />
+                <div className="flex gap-2 justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditingFounderMem(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    isLoading={updateMutation.isPending}
+                    onClick={() => {
+                      updateMutation.mutate(
+                        { founder_memory: founderMemory.trim() },
+                        { onSuccess: () => setEditingFounderMem(false) }
+                      );
+                    }}
+                  >
+                    Save
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="rounded-lg border border-violet-900/40 bg-violet-950/20 px-4 py-3 cursor-pointer hover:border-violet-800/50 transition-colors min-h-[64px]"
+                onClick={() => {
+                  setFounderMemory(ticket.founder_memory ?? "");
+                  setEditingFounderMem(true);
+                }}
+              >
+                {ticket.founder_memory ? (
+                  <p className="text-sm text-zinc-300 whitespace-pre-wrap">
+                    {ticket.founder_memory}
+                  </p>
+                ) : (
+                  <p className="text-sm text-zinc-600">
+                    Click to add founder memory for this ticket…
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Referenced tickets (cross-ticket memory) */}
+          <section className="space-y-2">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Referenced tickets
+            </h2>
+            <p className="text-[11px] text-zinc-600 -mt-1 mb-1">
+              Link other tickets by id so agents load their outcome into context on the next run.
+              Same company only.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+              <Input
+                label="Ticket UUID to link"
+                value={refTargetId}
+                onChange={(e) => setRefTargetId(e.target.value)}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="font-mono text-xs"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!refTargetId.trim()}
+                isLoading={addRefMutation.isPending}
+                onClick={() => addRefMutation.mutate(refTargetId)}
+              >
+                Add reference
+              </Button>
+            </div>
+            {ticketRefs.length === 0 ? (
+              <p className="text-sm text-zinc-600 italic">No references yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {ticketRefs.map((r) => (
+                  <li
+                    key={r.to_ticket_id}
+                    className="flex items-start justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <Link
+                        href={`/app/${companyId}/workspaces/${workspaceId}/tickets/${r.to_ticket_id}`}
+                        className="text-sm text-sky-400/90 hover:text-sky-300 font-mono break-all"
+                      >
+                        {r.to_ticket_id}
+                      </Link>
+                      {r.note ? (
+                        <p className="text-xs text-zinc-500 mt-1">{r.note}</p>
+                      ) : null}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="shrink-0 text-zinc-500"
+                      isLoading={removeRefMutation.isPending}
+                      onClick={() => removeRefMutation.mutate(r.to_ticket_id)}
+                    >
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Subtasks (direct children only — one level under top-level tickets) */}
+          <section className="space-y-3">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Subtasks
+            </h2>
+            {subtasks.length === 0 ? (
+              <p className="text-sm text-zinc-600 italic">
+                No subtasks yet. Agents attach work here with{" "}
+                <code className="text-zinc-500">create_subtask</code> so it stays under this ticket.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {subtasks.map((st) => {
+                  const stStatus = STATUS_OPTIONS.find((s) => s.value === st.status);
+                  return (
+                    <li key={st.id}>
+                      <Link
+                        href={`/app/${companyId}/workspaces/${workspaceId}/tickets/${st.id}`}
+                        className="flex items-start gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2.5 hover:border-zinc-700 transition-colors"
+                      >
+                        {stStatus && (
+                          <span
+                            className={cn(
+                              "mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] font-medium",
+                              stStatus.color
+                            )}
+                          >
+                            <span className={cn("h-1 w-1 rounded-full", stStatus.dot)} />
+                            {stStatus.label}
+                          </span>
+                        )}
+                        <span className="text-sm text-zinc-200 leading-snug">{st.title}</span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </section>
 

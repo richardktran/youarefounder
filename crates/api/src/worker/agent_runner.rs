@@ -6,7 +6,8 @@ use ai_core::{ChatCompletionRequest, Message};
 use ai_providers::ProviderRegistry;
 use domain::{
     AgentTicketRunPayload, CreateCommentInput, CreateDecisionRequestInput, CreateProposalInput,
-    CreateTicketInput, JobKind, TicketPriority, TicketStatus, TicketType, UpdateTicketInput,
+    CreateTicketInput, JobKind, RoleType, TicketPriority, TicketStatus, TicketType,
+    UpdateTicketInput,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -42,7 +43,7 @@ pub async fn run_agent_job(
             info!(job_id = %job_id, "agent run complete");
         }
         Err(e) => {
-            error!(job_id = %job_id, err = %e, "agent run failed");
+            error!(job_id = %job_id, "agent run failed: {:#}", e);
             events_tx
                 .send(JobEvent::Failed {
                     job_id,
@@ -74,6 +75,20 @@ async fn execute(
         person_id = %p.person_id,
         "agent run starting"
     );
+
+    if let Ok(Some(ticket)) = db::ticket::get_ticket(pool, p.ticket_id).await {
+        if matches!(
+            ticket.status,
+            TicketStatus::Done | TicketStatus::Cancelled
+        ) {
+            info!(
+                job_id = %job_id,
+                ticket_id = %p.ticket_id,
+                "skipping agent run: ticket is done or cancelled"
+            );
+            return Ok(());
+        }
+    }
 
     // ── Build context ─────────────────────────────────────────────────────────
     let ctx = ContextPack::build(pool, p.ticket_id, p.person_id)
@@ -146,9 +161,16 @@ async fn execute(
     };
 
     // ── Apply actions ─────────────────────────────────────────────────────────
-    let applied = apply_actions(pool, company_id, &ctx, p.person_id, &agent_resp.actions)
-        .await
-        .context("apply actions")?;
+    let applied = apply_actions(
+        pool,
+        company_id,
+        job_id,
+        &ctx,
+        p.person_id,
+        &agent_resp.actions,
+    )
+    .await
+    .context("apply actions")?;
 
     // ── Record run history ────────────────────────────────────────────────────
     db::agent_run::record_run(
@@ -172,15 +194,25 @@ async fn execute(
 async fn apply_actions(
     pool: &PgPool,
     company_id: Uuid,
+    job_id: Uuid,
     ctx: &ContextPack,
     person_id: Uuid,
     actions: &[AgentAction],
 ) -> Result<serde_json::Value> {
     let mut applied: Vec<serde_json::Value> = Vec::new();
 
-    for action in actions {
+    for (i, action) in actions.iter().enumerate() {
+        let step = format!("[{i}]");
         match action {
             AgentAction::AddComment { body } => {
+                if body.trim().is_empty() {
+                    warn!(
+                        job_id = %job_id,
+                        step = %step,
+                        "skipping empty add_comment (models sometimes emit blank comments)"
+                    );
+                    continue;
+                }
                 db::ticket::create_comment(
                     pool,
                     ctx.ticket.id,
@@ -190,13 +222,14 @@ async fn apply_actions(
                     },
                 )
                 .await
-                .context("add_comment")?;
+                .with_context(|| format!("{step} add_comment"))?;
                 applied.push(json!({"type": "add_comment", "body": body}));
             }
 
             AgentAction::UpdateTicket {
                 title,
                 description,
+                definition_of_done,
                 status,
                 priority,
                 assignee_person_id,
@@ -213,12 +246,15 @@ async fn apply_actions(
                     ctx.all_people.iter().find(|p| p.id == aid).cloned()
                 });
 
-                db::ticket::update_ticket(
+                let updated = db::ticket::update_ticket(
                     pool,
                     ctx.ticket.id,
                     UpdateTicketInput {
                         title: title.clone(),
                         description: description.clone(),
+                        definition_of_done: definition_of_done.clone(),
+                        founder_memory: None,
+                        outcome_summary: None,
                         status: status_parsed,
                         priority: priority_parsed,
                         ticket_type: None,
@@ -227,12 +263,16 @@ async fn apply_actions(
                     },
                 )
                 .await
-                .context("update_ticket")?;
+                .with_context(|| format!("{step} update_ticket"))?;
 
                 // If ticket was reassigned to an AI agent, immediately enqueue a job for them.
-                if let Some(new_assignee) = &resolved_assignee {
+                if let (Some(new_assignee), Some(t)) = (&resolved_assignee, &updated) {
                     if matches!(new_assignee.kind, domain::PersonKind::AiAgent)
                         && new_assignee.ai_profile_id.is_some()
+                        && !matches!(
+                            t.status,
+                            TicketStatus::Done | TicketStatus::Cancelled
+                        )
                     {
                         let job_priority = role_priority(&new_assignee.role_type);
                         let payload = json!({
@@ -269,12 +309,19 @@ async fn apply_actions(
             AgentAction::CreateTicket {
                 title,
                 description,
+                definition_of_done,
                 ticket_type,
                 status,
                 priority,
                 assignee_person_id,
                 workspace_id,
             } => {
+                let title = if title.trim().is_empty() {
+                    warn!(job_id = %job_id, %step, "create_ticket with empty title — using placeholder");
+                    "Untitled ticket".to_string()
+                } else {
+                    title.clone()
+                };
                 let ws_id = workspace_id.unwrap_or(ctx.ticket.workspace_id);
                 let type_parsed = ticket_type
                     .as_deref()
@@ -300,6 +347,9 @@ async fn apply_actions(
                     CreateTicketInput {
                         title: title.clone(),
                         description: description.clone(),
+                        definition_of_done: definition_of_done.clone(),
+                        founder_memory: None,
+                        outcome_summary: None,
                         ticket_type: Some(type_parsed),
                         status: Some(status_parsed),
                         priority: Some(priority_parsed),
@@ -308,7 +358,7 @@ async fn apply_actions(
                     },
                 )
                 .await
-                .context("create_ticket")?;
+                .with_context(|| format!("{step} create_ticket"))?;
 
                 // If the assignee is an AI agent, immediately enqueue a job so they
                 // can start working without waiting for the next scheduler tick.
@@ -346,6 +396,100 @@ async fn apply_actions(
                 }));
             }
 
+            AgentAction::CreateSubtask {
+                title,
+                description,
+                definition_of_done,
+                status,
+                priority,
+                assignee_person_id,
+            } => {
+                if ctx.ticket.parent_ticket_id.is_some() {
+                    warn!(
+                        job_id = %job_id,
+                        %step,
+                        "skipping create_subtask — only one level of subtasks (not under a subtask)"
+                    );
+                    applied.push(json!({
+                        "type": "create_subtask",
+                        "skipped": true,
+                        "reason": "only one level of subtasks is allowed"
+                    }));
+                    continue;
+                }
+                let title = if title.trim().is_empty() {
+                    warn!(job_id = %job_id, %step, "create_subtask with empty title — using placeholder");
+                    "Untitled subtask".to_string()
+                } else {
+                    title.clone()
+                };
+                let status_parsed = status
+                    .as_deref()
+                    .and_then(|s| s.parse::<TicketStatus>().ok())
+                    .unwrap_or(TicketStatus::Todo);
+                let priority_parsed = priority
+                    .as_deref()
+                    .and_then(|p| p.parse::<TicketPriority>().ok())
+                    .unwrap_or_default();
+
+                let resolved_assignee = assignee_person_id
+                    .and_then(|aid| ctx.all_people.iter().find(|p| p.id == aid).cloned())
+                    .unwrap_or_else(|| ctx.assignee.clone());
+
+                let new_ticket = db::ticket::create_ticket(
+                    pool,
+                    ctx.ticket.workspace_id,
+                    CreateTicketInput {
+                        title: title.clone(),
+                        description: description.clone(),
+                        definition_of_done: definition_of_done.clone(),
+                        founder_memory: None,
+                        outcome_summary: None,
+                        ticket_type: Some(TicketType::Task),
+                        status: Some(status_parsed),
+                        priority: Some(priority_parsed),
+                        assignee_person_id: Some(resolved_assignee.id),
+                        parent_ticket_id: Some(ctx.ticket.id),
+                    },
+                )
+                .await
+                .with_context(|| format!("{step} create_subtask"))?;
+
+                if matches!(resolved_assignee.kind, domain::PersonKind::AiAgent)
+                    && resolved_assignee.ai_profile_id.is_some()
+                {
+                    let job_priority = role_priority(&resolved_assignee.role_type);
+                    let payload = json!({
+                        "ticket_id": new_ticket.id,
+                        "person_id": resolved_assignee.id,
+                    });
+                    match db::job::enqueue(
+                        pool,
+                        JobKind::AgentTicketRun,
+                        company_id,
+                        payload,
+                        job_priority,
+                    )
+                    .await
+                    {
+                        Ok(j) => info!(
+                            job_id = %j.id,
+                            ticket_id = %new_ticket.id,
+                            assignee = %resolved_assignee.display_name,
+                            "auto-enqueued job for new subtask"
+                        ),
+                        Err(e) => warn!(err = %e, "failed to auto-enqueue for new subtask"),
+                    }
+                }
+
+                applied.push(json!({
+                    "type": "create_subtask",
+                    "title": title,
+                    "parent_ticket_id": ctx.ticket.id,
+                    "assignee_person_id": resolved_assignee.id,
+                }));
+            }
+
             AgentAction::ProposeHire {
                 employee_display_name,
                 role_type,
@@ -353,12 +497,31 @@ async fn apply_actions(
                 rationale,
                 scope_of_work,
             } => {
+                let name = if employee_display_name.trim().is_empty() {
+                    warn!(job_id = %job_id, %step, "propose_hire with empty name — using placeholder");
+                    "New hire".to_string()
+                } else {
+                    employee_display_name.clone()
+                };
+                let role_norm = role_type
+                    .trim()
+                    .parse::<RoleType>()
+                    .unwrap_or_else(|_| {
+                        warn!(
+                            job_id = %job_id,
+                            step = %step,
+                            raw = %role_type,
+                            "invalid role_type in propose_hire; defaulting to specialist"
+                        );
+                        RoleType::Specialist
+                    })
+                    .to_string();
                 db::hiring::create_proposal(
                     pool,
                     company_id,
                     CreateProposalInput {
-                        employee_display_name: employee_display_name.clone(),
-                        role_type: role_type.clone(),
+                        employee_display_name: name.clone(),
+                        role_type: role_norm.clone(),
                         specialty: specialty.clone(),
                         ai_profile_id: None,
                         rationale: rationale.clone(),
@@ -367,11 +530,11 @@ async fn apply_actions(
                     },
                 )
                 .await
-                .context("propose_hire")?;
+                .with_context(|| format!("{step} propose_hire"))?;
                 applied.push(json!({
                     "type": "propose_hire",
-                    "employee_display_name": employee_display_name,
-                    "role_type": role_type,
+                    "employee_display_name": name,
+                    "role_type": role_norm,
                 }));
             }
 
@@ -379,21 +542,87 @@ async fn apply_actions(
                 question,
                 context_note,
             } => {
+                let q = question.trim();
+                let question_text = if q.is_empty() {
+                    warn!(
+                        job_id = %job_id,
+                        step = %step,
+                        "request_decision with empty question — using placeholder (model output was invalid)"
+                    );
+                    "(The model did not provide a decision question.)".to_string()
+                } else {
+                    question.clone()
+                };
                 db::decision::create_decision_request(
                     pool,
                     company_id,
                     CreateDecisionRequestInput {
                         ticket_id: ctx.ticket.id,
                         raised_by_person_id: Some(person_id),
-                        question: question.clone(),
+                        question: question_text.clone(),
                         context_note: context_note.clone(),
                     },
                 )
                 .await
-                .context("request_decision")?;
+                .with_context(|| format!("{step} request_decision"))?;
                 applied.push(json!({
                     "type": "request_decision",
-                    "question": question,
+                    "question": question_text,
+                }));
+            }
+
+            AgentAction::AddTicketReference {
+                to_ticket_id,
+                note,
+            } => {
+                db::product_brain::add_ticket_reference(
+                    pool,
+                    ctx.ticket.id,
+                    *to_ticket_id,
+                    note.clone(),
+                )
+                .await
+                .with_context(|| format!("{step} add_ticket_reference"))?;
+                applied.push(json!({
+                    "type": "add_ticket_reference",
+                    "to_ticket_id": to_ticket_id,
+                }));
+            }
+
+            AgentAction::RemoveTicketReference { to_ticket_id } => {
+                db::product_brain::remove_ticket_reference(pool, ctx.ticket.id, *to_ticket_id)
+                    .await
+                    .with_context(|| format!("{step} remove_ticket_reference"))?;
+                applied.push(json!({
+                    "type": "remove_ticket_reference",
+                    "to_ticket_id": to_ticket_id,
+                }));
+            }
+
+            AgentAction::ProposeBrainInsight { summary, detail } => {
+                let mut body = summary.trim().to_string();
+                if body.is_empty() {
+                    body = "(empty proposal)".to_string();
+                }
+                if let Some(ref d) = detail {
+                    let t = d.trim();
+                    if !t.is_empty() {
+                        body.push_str("\n\n");
+                        body.push_str(t);
+                    }
+                }
+                let _id = db::product_brain::insert_pending(
+                    pool,
+                    ctx.company_id,
+                    Some(ctx.ticket.workspace_id),
+                    body,
+                    Some(ctx.ticket.id),
+                )
+                .await
+                .with_context(|| format!("{step} propose_brain_insight"))?;
+                applied.push(json!({
+                    "type": "propose_brain_insight",
+                    "ticket_id": ctx.ticket.id,
                 }));
             }
         }

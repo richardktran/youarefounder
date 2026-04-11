@@ -52,6 +52,10 @@ pub struct Company {
     pub run_state: RunState,
     /// Maximum number of agent jobs that can run concurrently for this company.
     pub max_concurrent_agents: i32,
+    /// Founder instructions for how agents should handle tickets (delegation, tone, cadence, etc.).
+    pub agent_ticket_memory: Option<String>,
+    /// Founder instructions for escalations and decisions (when to ask, how to format answers, etc.).
+    pub agent_decision_memory: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -76,6 +80,8 @@ pub struct UpdateCompanyInput {
     pub onboarding_complete: Option<bool>,
     pub run_state: Option<RunState>,
     pub max_concurrent_agents: Option<i32>,
+    pub agent_ticket_memory: Option<String>,
+    pub agent_decision_memory: Option<String>,
 }
 
 /// Response returned by `GET /v1/bootstrap` so the UI knows
@@ -84,4 +90,13 @@ pub struct UpdateCompanyInput {
 pub struct BootstrapStatus {
     pub onboarding_complete: bool,
     pub company_id: Option<Uuid>,
+}
+
+/// Exact phrase required in `POST /v1/system/reset-install` to wipe every company
+/// (and cascaded rows) on this install. Keep in sync with the web client.
+pub const RESET_INSTALL_CONFIRM_PHRASE: &str = "DELETE ALL LOCAL DATA";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetInstallInput {
+    pub confirm_phrase: String,
 }

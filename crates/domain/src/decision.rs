@@ -33,6 +33,8 @@ impl std::str::FromStr for DecisionStatus {
 pub struct DecisionRequest {
     pub id: Uuid,
     pub company_id: Uuid,
+    /// Workspace containing [`Self::ticket_id`] — for deep-linking from inbox.
+    pub workspace_id: Uuid,
     pub ticket_id: Uuid,
     pub raised_by_person_id: Option<Uuid>,
     /// The specific question being escalated to the founder.

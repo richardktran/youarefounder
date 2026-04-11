@@ -136,3 +136,17 @@ pub async fn decline_proposal(
 
     Ok(Json(proposal))
 }
+
+/// `DELETE /v1/companies/:id/hiring-proposals/:proposal_id`
+/// Removes a proposal that is still pending founder review.
+pub async fn delete_proposal(
+    State(state): State<AppState>,
+    Path((company_id, proposal_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    let deleted = db::hiring::delete_proposal(&state.pool, company_id, proposal_id).await?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}

@@ -98,7 +98,7 @@ export interface AiProfile {
 }
 
 export type PersonKind = "human_founder" | "ai_agent";
-export type RoleType = "co_founder" | "ceo" | "cto" | "specialist";
+export type RoleType = "co_founder" | "ceo" | "cto" | "cfo" | "specialist";
 
 export interface Person {
   id: string;

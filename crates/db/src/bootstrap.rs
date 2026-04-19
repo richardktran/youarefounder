@@ -79,7 +79,8 @@ pub async fn ensure_first_simulation_ticket(pool: &PgPool, company_id: Uuid) -> 
         }
         let dod = "- You have internalized the product idea and company/agent memory.\n\
                    - You have posted a **plan** in comments (phases, needed functions).\n\
-                   - You have **`propose_hire`**’d a minimal org (e.g. CEO, CTO, key specialists) with correct **`workspace_ids`**, and created **delegated** tickets/subtasks in the right workspaces with **`assignee_person_id`** set — you orchestrate; hires execute.\n\
+                   - You have **`propose_hire`**’d only your **executive layer** (e.g. CEO, CTO, CFO) with correct **`workspace_ids`** — not every specialist; executives hire ICs under them later.\n\
+                   - You have created **delegated** tickets/subtasks with **`assignee_person_id`** set to the right **leaders** — you orchestrate; they staff and execute.\n\
                    - The path forward is clear without the founder doing IC work for every function."
             .to_string();
         (title, Some(desc), Some(dod))
@@ -92,7 +93,7 @@ pub async fn ensure_first_simulation_ticket(pool: &PgPool, company_id: Uuid) -> 
                     .to_string(),
             ),
             Some(
-                "- Plan in comments; hire org with workspace placement; delegate execution to the right assignees."
+                "- Plan in comments; hire executives (CEO/CTO/CFO) only; delegate so leaders hire the rest over time."
                     .to_string(),
             ),
         )

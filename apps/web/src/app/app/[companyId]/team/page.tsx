@@ -48,6 +48,7 @@ const ROLE_LABELS: Record<RoleType, string> = {
   co_founder: "Co-founder",
   ceo: "CEO",
   cto: "CTO",
+  cfo: "CFO",
   specialist: "Specialist",
 };
 
@@ -55,6 +56,7 @@ const ROLE_COLORS: Record<RoleType, string> = {
   co_founder: "text-purple-400 bg-purple-950/60",
   ceo: "text-blue-400 bg-blue-950/60",
   cto: "text-cyan-400 bg-cyan-950/60",
+  cfo: "text-emerald-400 bg-emerald-950/60",
   specialist: "text-amber-400 bg-amber-950/60",
 };
 
@@ -304,6 +306,7 @@ export default function TeamPage() {
                 <option value="co_founder">Co-founder</option>
                 <option value="ceo">CEO</option>
                 <option value="cto">CTO</option>
+                <option value="cfo">CFO</option>
                 <option value="specialist">Specialist</option>
               </select>
             </div>
@@ -1037,6 +1040,7 @@ function PersonRow({
                 <option value="co_founder">Co-founder</option>
                 <option value="ceo">CEO</option>
                 <option value="cto">CTO</option>
+                <option value="cfo">CFO</option>
                 <option value="specialist">Specialist</option>
               </select>
             </div>

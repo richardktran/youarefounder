@@ -69,7 +69,9 @@ pub async fn enqueue_ticket_run(
     {
         match (&person.kind, &person.role_type) {
             (PersonKind::AiAgent, RoleType::CoFounder) => PRIORITY_CO_FOUNDER,
-            (PersonKind::AiAgent, RoleType::Ceo | RoleType::Cto) => PRIORITY_EXECUTIVE,
+            (PersonKind::AiAgent, RoleType::Ceo | RoleType::Cto | RoleType::Cfo) => {
+                PRIORITY_EXECUTIVE
+            }
             _ => PRIORITY_SPECIALIST,
         }
     } else {

@@ -63,6 +63,27 @@ pub async fn ai_profile_id_of_ai_co_founder(
     Ok(id)
 }
 
+/// Whether the company already has someone in this **executive** seat (`ceo`, `cto`, or `cfo`).
+/// Used to block duplicate `propose_hire` for the same top role.
+pub async fn company_has_executive_role(
+    pool: &PgPool,
+    company_id: Uuid,
+    role: RoleType,
+) -> Result<bool> {
+    if !matches!(role, RoleType::Ceo | RoleType::Cto | RoleType::Cfo) {
+        return Ok(false);
+    }
+    let role_s = role.to_string();
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM people WHERE company_id = $1 AND role_type = $2",
+    )
+    .bind(company_id)
+    .bind(role_s)
+    .fetch_one(pool)
+    .await?;
+    Ok(n > 0)
+}
+
 pub async fn get_person(
     pool: &PgPool,
     company_id: Uuid,

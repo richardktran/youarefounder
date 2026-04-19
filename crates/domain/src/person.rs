@@ -35,6 +35,7 @@ pub enum RoleType {
     CoFounder,
     Ceo,
     Cto,
+    Cfo,
     Specialist,
 }
 
@@ -44,6 +45,7 @@ impl std::fmt::Display for RoleType {
             Self::CoFounder => write!(f, "co_founder"),
             Self::Ceo => write!(f, "ceo"),
             Self::Cto => write!(f, "cto"),
+            Self::Cfo => write!(f, "cfo"),
             Self::Specialist => write!(f, "specialist"),
         }
     }
@@ -56,6 +58,7 @@ impl std::str::FromStr for RoleType {
             "co_founder" => Ok(Self::CoFounder),
             "ceo" => Ok(Self::Ceo),
             "cto" => Ok(Self::Cto),
+            "cfo" => Ok(Self::Cfo),
             "specialist" => Ok(Self::Specialist),
             other => Err(format!("unknown role type: {other}")),
         }

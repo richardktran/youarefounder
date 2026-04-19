@@ -355,6 +355,33 @@ async fn resolve_workspace_for_agent_create_ticket(
     }
 }
 
+/// After an agent does real work on a ticket, move it off `todo` / `backlog` without requiring an
+/// explicit `update_ticket` status field from the model.
+async fn bump_ticket_to_in_progress_if_still_open(
+    pool: &PgPool,
+    ticket_id: Uuid,
+) -> Result<bool> {
+    let Some(t) = db::ticket::get_ticket(pool, ticket_id).await? else {
+        return Ok(false);
+    };
+    if !matches!(
+        t.status,
+        TicketStatus::Todo | TicketStatus::Backlog
+    ) {
+        return Ok(false);
+    }
+    let updated = db::ticket::update_ticket(
+        pool,
+        ticket_id,
+        UpdateTicketInput {
+            status: Some(TicketStatus::InProgress),
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(updated.is_some())
+}
+
 /// Apply all actions in order. Returns JSON of applied actions for audit.
 async fn apply_actions(
     pool: &PgPool,
@@ -365,6 +392,8 @@ async fn apply_actions(
     actions: &[AgentAction],
 ) -> Result<serde_json::Value> {
     let mut applied: Vec<serde_json::Value> = Vec::new();
+    // Any action that reflects work on `ctx.ticket` (skips / empty comments do not set this).
+    let mut should_mark_in_progress = false;
 
     for (i, action) in actions.iter().enumerate() {
         let step = format!("[{i}]");
@@ -389,6 +418,7 @@ async fn apply_actions(
                 )
                 .await
                 .with_context(|| format!("{step} add_comment"))?;
+                should_mark_in_progress = true;
                 applied.push(json!({"type": "add_comment", "body": display}));
             }
 
@@ -464,6 +494,7 @@ async fn apply_actions(
                     }
                 }
 
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "update_ticket",
                     "status": status,
@@ -562,6 +593,7 @@ async fn apply_actions(
                     }
                 }
 
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "create_ticket",
                     "title": title,
@@ -656,6 +688,7 @@ async fn apply_actions(
                     }
                 }
 
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "create_subtask",
                     "title": title,
@@ -678,19 +711,59 @@ async fn apply_actions(
                 } else {
                     employee_display_name.clone()
                 };
-                let role_norm = role_type
-                    .trim()
-                    .parse::<RoleType>()
-                    .unwrap_or_else(|_| {
-                        warn!(
-                            job_id = %job_id,
-                            step = %step,
-                            raw = %role_type,
-                            "invalid role_type in propose_hire; defaulting to specialist"
-                        );
-                        RoleType::Specialist
-                    })
-                    .to_string();
+                let role_parsed = role_type.trim().parse::<RoleType>().unwrap_or_else(|_| {
+                    warn!(
+                        job_id = %job_id,
+                        step = %step,
+                        raw = %role_type,
+                        "invalid role_type in propose_hire; defaulting to specialist"
+                    );
+                    RoleType::Specialist
+                });
+                let role_norm = role_parsed.to_string();
+
+                if matches!(ctx.assignee.role_type, RoleType::CoFounder)
+                    && !matches!(
+                        role_parsed,
+                        RoleType::Ceo | RoleType::Cto | RoleType::Cfo
+                    )
+                {
+                    warn!(
+                        job_id = %job_id,
+                        %step,
+                        role = %role_norm,
+                        "skipping propose_hire — co-founder only hires direct executive reports (CEO, CTO, CFO); specialists are hired by executives when work requires them"
+                    );
+                    applied.push(json!({
+                        "type": "propose_hire",
+                        "skipped": true,
+                        "reason": "co-founder only proposes CEO, CTO, or CFO; CEOs/CTOs/CFOs hire specialists under them",
+                        "role_type": role_norm,
+                    }));
+                    continue;
+                }
+
+                if matches!(
+                    role_parsed,
+                    RoleType::Ceo | RoleType::Cto | RoleType::Cfo
+                ) && db::person::company_has_executive_role(pool, company_id, role_parsed)
+                    .await?
+                {
+                    warn!(
+                        job_id = %job_id,
+                        %step,
+                        role = %role_norm,
+                        "skipping propose_hire — company already has this executive role"
+                    );
+                    applied.push(json!({
+                        "type": "propose_hire",
+                        "skipped": true,
+                        "reason": "executive role already filled (at most one CEO, one CTO, and one CFO)",
+                        "role_type": role_norm,
+                    }));
+                    continue;
+                }
+
                 db::hiring::create_proposal_auto_accept(
                     pool,
                     company_id,
@@ -710,6 +783,7 @@ async fn apply_actions(
                 )
                 .await
                 .with_context(|| format!("{step} propose_hire"))?;
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "propose_hire",
                     "employee_display_name": name,
@@ -756,6 +830,7 @@ async fn apply_actions(
                 )
                 .await
                 .with_context(|| format!("{step} request_decision (logged as comment)"))?;
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "request_decision",
                     "question": question_text,
@@ -775,6 +850,7 @@ async fn apply_actions(
                 )
                 .await
                 .with_context(|| format!("{step} add_ticket_reference"))?;
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "add_ticket_reference",
                     "to_ticket_id": to_ticket_id,
@@ -783,8 +859,9 @@ async fn apply_actions(
 
             AgentAction::RemoveTicketReference { to_ticket_id } => {
                 db::product_brain::remove_ticket_reference(pool, ctx.ticket.id, *to_ticket_id)
-                    .await
-                    .with_context(|| format!("{step} remove_ticket_reference"))?;
+                .await
+                .with_context(|| format!("{step} remove_ticket_reference"))?;
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "remove_ticket_reference",
                     "to_ticket_id": to_ticket_id,
@@ -820,12 +897,36 @@ async fn apply_actions(
                 .await
                 .with_context(|| format!("{step} propose_brain_insight approve"))?
                 .ok_or_else(|| anyhow::anyhow!("brain insight was not promoted"))?;
+                should_mark_in_progress = true;
                 applied.push(json!({
                     "type": "propose_brain_insight",
                     "ticket_id": ctx.ticket.id,
                     "promoted": true,
                 }));
             }
+        }
+    }
+
+    if should_mark_in_progress {
+        match bump_ticket_to_in_progress_if_still_open(pool, ctx.ticket.id).await {
+            Ok(true) => {
+                info!(
+                    job_id = %job_id,
+                    ticket_id = %ctx.ticket.id,
+                    "auto-set ticket status to in_progress after agent work"
+                );
+                applied.push(json!({
+                    "type": "auto_in_progress",
+                    "ticket_id": ctx.ticket.id,
+                }));
+            }
+            Ok(false) => {}
+            Err(e) => warn!(
+                job_id = %job_id,
+                ticket_id = %ctx.ticket.id,
+                err = %e,
+                "failed to auto-set ticket to in_progress"
+            ),
         }
     }
 

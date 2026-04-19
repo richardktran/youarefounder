@@ -291,7 +291,7 @@ async fn enqueue_for_person(
 ) {
     let priority = match role_type {
         RoleType::CoFounder => PRIORITY_CO_FOUNDER,
-        RoleType::Ceo | RoleType::Cto => PRIORITY_EXECUTIVE,
+        RoleType::Ceo | RoleType::Cto | RoleType::Cfo => PRIORITY_EXECUTIVE,
         RoleType::Specialist => PRIORITY_SPECIALIST,
     };
 

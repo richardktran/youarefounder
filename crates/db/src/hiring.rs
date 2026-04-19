@@ -201,9 +201,11 @@ pub async fn accept_proposal(
         .parse::<RoleType>()
         .unwrap_or(RoleType::Specialist);
 
+    let reports_to_person_id = proposal.proposed_by_person_id;
+
     let person_row = sqlx::query(
-        "INSERT INTO people (company_id, kind, display_name, role_type, specialty, ai_profile_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO people (company_id, kind, display_name, role_type, specialty, ai_profile_id, reports_to_person_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id",
     )
     .bind(company_id)
@@ -212,6 +214,7 @@ pub async fn accept_proposal(
     .bind(role_type.to_string())
     .bind(&proposal.specialty)
     .bind(proposal.ai_profile_id)
+    .bind(reports_to_person_id)
     .fetch_one(&mut *tx)
     .await?;
 

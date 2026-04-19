@@ -36,6 +36,21 @@ pub async fn run_company(
         .await?
         .ok_or(ApiError::NotFound)?;
 
+    match db::bootstrap::ensure_first_simulation_ticket(&state.pool, company_id).await {
+        Ok(Some(t)) => info!(
+            company_id = %company_id,
+            ticket_id = %t.id,
+            workspace_id = %t.workspace_id,
+            "created bootstrap kickoff ticket for co-founder"
+        ),
+        Ok(None) => {}
+        Err(e) => warn!(
+            company_id = %company_id,
+            err = %e,
+            "bootstrap kickoff ticket failed (simulation still running)"
+        ),
+    }
+
     // Immediately scan all tickets and enqueue any that are not yet queued.
     // This avoids waiting for the next scheduler tick when starting or resuming.
     let pool = state.pool.clone();

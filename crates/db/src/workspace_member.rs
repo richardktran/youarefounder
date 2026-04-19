@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use domain::{AddWorkspaceMemberInput, WorkspaceMember, WorkspaceMemberRole};
 use sqlx::{postgres::PgRow, PgPool, Row};
 use uuid::Uuid;
@@ -95,4 +95,51 @@ pub async fn remove_workspace_member(
     .await?;
 
     Ok(res.rows_affected() > 0)
+}
+
+/// Ensure every AI co-founder in the company is a member of this workspace (idempotent).
+pub async fn ensure_ai_cofounders_in_workspace(
+    pool: &PgPool,
+    company_id: Uuid,
+    workspace_id: Uuid,
+) -> Result<()> {
+    let Some(ws) = crate::workspace::get_workspace(pool, workspace_id).await? else {
+        return Err(anyhow!("workspace not found"));
+    };
+    if ws.company_id != company_id {
+        return Err(anyhow!("workspace belongs to another company"));
+    }
+
+    let cofounder_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM people
+         WHERE company_id = $1 AND kind = 'ai_agent' AND role_type = 'co_founder'",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
+
+    for pid in cofounder_ids {
+        add_workspace_member(
+            pool,
+            workspace_id,
+            AddWorkspaceMemberInput {
+                person_id: pid,
+                role: WorkspaceMemberRole::Member,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Call [`ensure_ai_cofounders_in_workspace`] for every workspace in the company.
+pub async fn ensure_ai_cofounders_in_all_company_workspaces(
+    pool: &PgPool,
+    company_id: Uuid,
+) -> Result<()> {
+    let workspaces = crate::workspace::list_workspaces(pool, company_id).await?;
+    for w in workspaces {
+        ensure_ai_cofounders_in_workspace(pool, company_id, w.id).await?;
+    }
+    Ok(())
 }

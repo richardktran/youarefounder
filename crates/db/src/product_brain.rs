@@ -395,12 +395,18 @@ pub async fn enqueue_draft_from_completed_ticket(pool: &PgPool, ticket: &Ticket)
 
     let comments = crate::ticket::list_comments(pool, ticket.id).await?;
     let body = build_draft_body(ticket, &comments);
-    insert_pending(
+    let pending_id = insert_pending(
         pool,
         company_id,
         Some(ticket.workspace_id),
         body,
         Some(ticket.id),
+    )
+    .await?;
+    let _ = approve_pending(
+        pool,
+        pending_id,
+        ApprovePendingBrainInput { body: None },
     )
     .await?;
     Ok(())

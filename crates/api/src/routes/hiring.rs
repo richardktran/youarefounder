@@ -56,6 +56,7 @@ pub struct CreateProposalRequest {
     pub rationale: Option<String>,
     pub scope_of_work: Option<String>,
     pub proposed_by_person_id: Option<Uuid>,
+    pub workspace_ids: Option<Vec<Uuid>>,
 }
 
 /// `POST /v1/companies/:id/hiring-proposals`
@@ -76,9 +77,10 @@ pub async fn create_proposal(
         ai_profile_id: req.ai_profile_id,
         rationale: req.rationale,
         scope_of_work: req.scope_of_work,
+        workspace_ids: req.workspace_ids,
     };
 
-    let proposal = db::hiring::create_proposal(&state.pool, company_id, input)
+    let proposal = db::hiring::create_proposal_auto_accept(&state.pool, company_id, input)
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 

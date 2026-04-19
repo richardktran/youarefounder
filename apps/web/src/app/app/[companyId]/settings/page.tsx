@@ -179,9 +179,9 @@ export default function SettingsPage() {
             Agent memory
           </CardTitle>
           <CardDescription>
-            Persistent instructions injected into every agent run. Use this so tickets and
-            decisions follow how you want to work (priorities, tone, when to escalate, how
-            to phrase questions, etc.).
+            Persistent instructions injected into every agent run (priorities, tone, how the
+            team should execute). The team runs autonomously after onboarding — there is no
+            founder decision inbox.
           </CardDescription>
         </CardHeader>
         {companyLoading ? (
@@ -196,11 +196,11 @@ export default function SettingsPage() {
               placeholder="- Prefer subtasks over new top-level tickets&#10;- Always delegate X to the CTO agent&#10;- ..."
             />
             <Textarea
-              label="Decisions & escalations"
+              label="Team judgment and style"
               value={decisionMemory}
               onChange={(e) => setDecisionMemory(e.target.value)}
               rows={5}
-              placeholder="- Ask me only for budget or brand calls&#10;- When unsure, propose a default and a fallback&#10;- ..."
+              placeholder="- Prefer shipping small iterations&#10;- When unsure, pick a default and document it in comments&#10;- ..."
             />
             <Button
               size="sm"
@@ -213,7 +213,7 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      {/* Product brain (founder review queue + approved corpus) */}
+      {/* Product brain (auto-promoted + optional manual review) */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -221,9 +221,8 @@ export default function SettingsPage() {
             Product brain
           </CardTitle>
           <CardDescription>
-            When tickets complete, drafts land here for your review. Approving promotes them into
-            persistent knowledge agents see on future runs (alongside Agent memory above).
-            Agents can also propose insights; duplicates may appear if multiple drafts exist.
+            Completed tickets and agent insights are promoted into persistent knowledge
+            automatically. You can still approve or reject any rare pending drafts below.
           </CardDescription>
         </CardHeader>
         {brainPendingLoading || brainEntriesLoading ? (

@@ -147,6 +147,8 @@ export interface HiringProposal {
   founder_response_text: string | null;
   /** Populated after accept — the newly created Person id. */
   created_person_id: string | null;
+  /** Workspaces the hire joins on accept (co-founder hires join all regardless). */
+  workspace_ids: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -779,6 +781,7 @@ export async function createHiringProposal(
     rationale?: string;
     scope_of_work?: string;
     proposed_by_person_id?: string;
+    workspace_ids?: string[];
   }
 ): Promise<HiringProposal> {
   const { data } = await apiClient.post<HiringProposal>(

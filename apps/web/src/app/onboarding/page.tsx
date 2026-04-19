@@ -53,7 +53,7 @@ export default function OnboardingPage() {
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(
     "http://127.0.0.1:11434"
   );
-  const [modelId, setModelId] = useState("llama3.2");
+  const [modelId, setModelId] = useState("gemma4:e2b");
   const [cofounderName, setCofounderName] = useState("Alex");
   const [connectionStatus, setConnectionStatus] = useState<
     "idle" | "testing" | "ok" | "error"

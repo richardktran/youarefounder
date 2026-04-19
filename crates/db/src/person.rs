@@ -42,6 +42,27 @@ pub async fn list_people(pool: &PgPool, company_id: Uuid) -> Result<Vec<Person>>
     Ok(rows.iter().map(row_to_person).collect())
 }
 
+/// `ai_profile_id` of the company's first AI co-founder — used as the default for new hires.
+pub async fn ai_profile_id_of_ai_co_founder(
+    pool: &PgPool,
+    company_id: Uuid,
+) -> Result<Option<Uuid>> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT ai_profile_id FROM people
+         WHERE company_id = $1
+           AND kind = 'ai_agent'
+           AND role_type = 'co_founder'
+           AND ai_profile_id IS NOT NULL
+         ORDER BY created_at ASC
+         LIMIT 1",
+    )
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(id)
+}
+
 pub async fn get_person(
     pool: &PgPool,
     company_id: Uuid,

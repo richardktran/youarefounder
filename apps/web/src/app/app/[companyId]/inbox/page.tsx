@@ -195,6 +195,7 @@ export default function InboxPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["hiring-proposals", companyId] });
+      queryClient.invalidateQueries({ queryKey: ["people", companyId] });
       setShowNewForm(false);
       setNewName("");
       setNewRole("specialist");
@@ -202,7 +203,7 @@ export default function InboxPage() {
       setNewAiProfileId("");
       setNewRationale("");
       setNewScope("");
-      setHiringSubTab("pending");
+      setHiringSubTab("all");
     },
   });
 
@@ -283,7 +284,8 @@ export default function InboxPage() {
             )}
           </h1>
           <p className="text-zinc-400 mt-1 text-sm">
-            Decisions and hiring proposals waiting for your review.
+            Legacy items only — the team hires and decides autonomously. New hiring is
+            auto-approved; decisions are logged on tickets as comments.
           </p>
         </div>
         {mainTab === "hiring" && (

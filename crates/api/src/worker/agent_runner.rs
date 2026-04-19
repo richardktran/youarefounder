@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use ai_core::{ChatCompletionRequest, Message};
 use ai_providers::ProviderRegistry;
 use domain::{
-    AgentTicketRunPayload, CreateCommentInput, CreateDecisionRequestInput, CreateProposalInput,
+    AgentTicketRunPayload, ApprovePendingBrainInput, CreateCommentInput, CreateProposalInput,
     CreateTicketInput, JobKind, RoleType, TicketPriority, TicketStatus, TicketType,
     UpdateTicketInput,
 };
@@ -15,10 +15,74 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use super::actions::{parse_response, AgentAction};
+use super::actions::{comment_body_for_ticket, parse_response, AgentAction, AgentResponse};
 use super::context::ContextPack;
 use super::scheduler::role_priority;
 use crate::job_events::JobEvent;
+
+/// Repeated at the provider boundary so local models attend to structure (user prompt has the full schema).
+const AGENT_JSON_SYSTEM_PREAMBLE: &str = r#"You are a JSON API. Your reply must be exactly one JSON object: {"actions":[...]} and nothing else.
+
+Rules:
+- Single top-level key: "actions" (a JSON array). No other top-level keys. No markdown fences, no prose before/after.
+- Each array item is an object with string field "type" (snake_case). Allowed types: add_comment, update_ticket, create_subtask, create_ticket, propose_hire, add_ticket_reference, remove_ticket_reference, propose_brain_insight.
+- Standard JSON: ASCII double quotes, no trailing commas, no comments.
+- Keep each `add_comment` body reasonably short; the output must end as valid JSON (`}]}`). If the plan is long, summarize in one turn and continue on the next scheduler run.
+
+Example: {"actions":[{"type":"add_comment","body":"…"}]}"#;
+
+/// Ollama omits `num_predict` when this is `None`, which often defaults to a **small** generation
+/// budget — long `add_comment` JSON is cut mid-string and parsing fails. Agent runs always send a
+/// positive cap; profiles can override with `default_max_tokens`.
+const AGENT_DEFAULT_MAX_TOKENS: u32 = 8192;
+
+fn resolve_agent_max_tokens(profile_max: Option<i32>) -> Option<u32> {
+    match profile_max {
+        Some(n) if n > 0 => Some(n as u32),
+        _ => Some(AGENT_DEFAULT_MAX_TOKENS),
+    }
+}
+
+/// Parse failures are often truncation (output hit `max_tokens`). Retry with a smaller budget and
+/// explicit “shorter JSON” instructions until we get valid JSON or exhaust attempts.
+const COMPACT_JSON_MAX_ATTEMPTS: usize = 4;
+
+const COMPACT_JSON_RETRY_REMINDER: &str = r#"CRITICAL: Your previous reply was not usable — invalid JSON, truncated mid-string, or otherwise failed validation.
+
+Reply again with ONLY one JSON object: {"actions":[...]} and nothing else (no markdown fences, no prose).
+
+This attempt must be SHORT:
+- At most 2 entries in "actions".
+- Each add_comment "body" must stay under 800 characters (tight bullets; no long essays).
+- You must close every string and end with a valid JSON object."#;
+
+fn max_tokens_for_compact_attempt(base: u32, attempt: usize) -> u32 {
+    let div = 1u32 << attempt.min(3);
+    let t = base.saturating_div(div);
+    t.max(512).min(base)
+}
+
+fn truncate_response_for_retry(raw: &str) -> String {
+    const MAX_CHARS: usize = 8_000;
+    if raw.chars().count() <= MAX_CHARS {
+        return raw.to_string();
+    }
+    let mut s: String = raw.chars().take(MAX_CHARS).collect();
+    s.push_str("\n…(truncated)");
+    s
+}
+
+fn compact_retry_user_message(attempt: usize, parse_err: &str, finish_reason: Option<&str>) -> String {
+    let detail: String = parse_err.chars().take(480).collect();
+    format!(
+        "{reminder}\n\n---\nValidator (abridged): {detail}\nProvider stop reason: {fr}\n---\nShorten further (retry {n} of {max}).",
+        reminder = COMPACT_JSON_RETRY_REMINDER,
+        detail = detail,
+        fr = finish_reason.unwrap_or("(none)"),
+        n = attempt + 1,
+        max = COMPACT_JSON_MAX_ATTEMPTS,
+    )
+}
 
 /// Run one agent turn for the given job.
 ///
@@ -111,53 +175,113 @@ async fn execute(
         .build_adapter(&profile.provider_kind, &profile.provider_config)
         .map_err(|e| anyhow::anyhow!("build adapter: {e}"))?;
 
-    // ── Call LLM ──────────────────────────────────────────────────────────────
+    // ── Call LLM (with compact-json retries) ──────────────────────────────────
     let prompt = ctx.build_prompt();
+    let base_max = resolve_agent_max_tokens(profile.default_max_tokens)
+        .unwrap_or(AGENT_DEFAULT_MAX_TOKENS);
 
-    let req = ChatCompletionRequest {
-        model: profile.model_id.clone(),
-        messages: vec![Message::user(&prompt)],
-        temperature: profile.default_temperature,
-        max_tokens: profile.default_max_tokens.map(|t| t as u32),
-    };
+    let mut raw = String::new();
+    let mut last_parse_err = String::new();
+    let mut last_finish: Option<String> = None;
+    let mut agent_resp: Option<AgentResponse> = None;
 
-    info!(job_id = %job_id, model = %profile.model_id, "calling LLM");
+    for attempt in 0..COMPACT_JSON_MAX_ATTEMPTS {
+        let messages: Vec<Message> = if attempt == 0 {
+            vec![
+                Message::system(AGENT_JSON_SYSTEM_PREAMBLE),
+                Message::user(&prompt),
+            ]
+        } else {
+            vec![
+                Message::system(AGENT_JSON_SYSTEM_PREAMBLE),
+                Message::user(&prompt),
+                Message::assistant(truncate_response_for_retry(&raw)),
+                Message::user(compact_retry_user_message(
+                    attempt,
+                    &last_parse_err,
+                    last_finish.as_deref(),
+                )),
+            ]
+        };
 
-    let resp = adapter
-        .complete(req)
-        .await
-        .map_err(|e| anyhow::anyhow!("LLM inference failed: {e}"))?;
+        let max_tokens = max_tokens_for_compact_attempt(base_max, attempt);
+        let req = ChatCompletionRequest {
+            model: profile.model_id.clone(),
+            messages,
+            temperature: profile.default_temperature,
+            max_tokens: Some(max_tokens),
+        };
 
-    let raw = resp.content;
+        info!(
+            job_id = %job_id,
+            model = %profile.model_id,
+            attempt,
+            max_tokens,
+            "calling LLM"
+        );
 
-    info!(
-        job_id = %job_id,
-        chars = raw.len(),
-        finish_reason = ?resp.finish_reason,
-        "LLM responded, parsing actions"
-    );
-
-    // ── Parse actions ─────────────────────────────────────────────────────────
-    let agent_resp = match parse_response(&raw) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(job_id = %job_id, err = %e, "failed to parse agent response");
-            // Record the malformed run so it shows up in history.
-            db::agent_run::record_run(
-                pool,
-                job_id,
-                p.ticket_id,
-                p.person_id,
-                None,
-                None,
-                Some(&raw),
-                &json!([]),
-                Some(&e),
-            )
+        let resp = adapter
+            .complete(req)
             .await
-            .ok();
-            return Err(anyhow::anyhow!("parse agent response: {e}"));
+            .map_err(|e| anyhow::anyhow!("LLM inference failed: {e}"))?;
+
+        raw = resp.content;
+        last_finish = resp.finish_reason.clone();
+
+        info!(
+            job_id = %job_id,
+            attempt,
+            chars = raw.len(),
+            finish_reason = ?last_finish,
+            "LLM responded, parsing actions"
+        );
+
+        match parse_response(&raw) {
+            Ok(r) => {
+                agent_resp = Some(r);
+                break;
+            }
+            Err(e) => {
+                last_parse_err = e;
+                let excerpt: String = raw.chars().take(900).collect();
+                warn!(
+                    job_id = %job_id,
+                    attempt,
+                    err = %last_parse_err,
+                    response_chars = raw.len(),
+                    "failed to parse agent response (excerpt below)"
+                );
+                warn!(job_id = %job_id, excerpt = %excerpt, "raw LLM response excerpt");
+                if attempt + 1 < COMPACT_JSON_MAX_ATTEMPTS {
+                    warn!(
+                        job_id = %job_id,
+                        next_max_tokens = max_tokens_for_compact_attempt(base_max, attempt + 1),
+                        "retrying with shorter output budget"
+                    );
+                }
+            }
         }
+    }
+
+    let Some(agent_resp) = agent_resp else {
+        db::agent_run::record_run(
+            pool,
+            job_id,
+            p.ticket_id,
+            p.person_id,
+            None,
+            None,
+            Some(&raw),
+            &json!([]),
+            Some(&last_parse_err),
+        )
+        .await
+        .ok();
+        return Err(anyhow::anyhow!(
+            "parse agent response after {} attempts: {}",
+            COMPACT_JSON_MAX_ATTEMPTS,
+            last_parse_err
+        ));
     };
 
     // ── Apply actions ─────────────────────────────────────────────────────────
@@ -190,6 +314,47 @@ async fn execute(
     Ok(())
 }
 
+/// `create_ticket.workspace_id` must reference a workspace in **this** company. Models sometimes
+/// emit wrong UUIDs; falling back avoids failing the whole agent run on a foreign-key error.
+async fn resolve_workspace_for_agent_create_ticket(
+    pool: &PgPool,
+    job_id: Uuid,
+    company_id: Uuid,
+    current_ticket_workspace_id: Uuid,
+    requested: Option<Uuid>,
+) -> Result<Uuid> {
+    let candidate = requested.unwrap_or(current_ticket_workspace_id);
+
+    if candidate == current_ticket_workspace_id {
+        return Ok(candidate);
+    }
+
+    let ws = db::workspace::get_workspace(pool, candidate)
+        .await
+        .with_context(|| format!("lookup workspace {candidate} for create_ticket"))?;
+
+    match ws {
+        Some(w) if w.company_id == company_id => Ok(candidate),
+        Some(_) => {
+            warn!(
+                job_id = %job_id,
+                requested = %candidate,
+                company_id = %company_id,
+                "create_ticket workspace_id belongs to a different company — using current ticket workspace"
+            );
+            Ok(current_ticket_workspace_id)
+        }
+        None => {
+            warn!(
+                job_id = %job_id,
+                requested = %candidate,
+                "create_ticket workspace_id not found — using current ticket workspace"
+            );
+            Ok(current_ticket_workspace_id)
+        }
+    }
+}
+
 /// Apply all actions in order. Returns JSON of applied actions for audit.
 async fn apply_actions(
     pool: &PgPool,
@@ -205,7 +370,8 @@ async fn apply_actions(
         let step = format!("[{i}]");
         match action {
             AgentAction::AddComment { body } => {
-                if body.trim().is_empty() {
+                let display = comment_body_for_ticket(body);
+                if display.trim().is_empty() {
                     warn!(
                         job_id = %job_id,
                         step = %step,
@@ -217,13 +383,13 @@ async fn apply_actions(
                     pool,
                     ctx.ticket.id,
                     CreateCommentInput {
-                        body: body.clone(),
+                        body: display.clone(),
                         author_person_id: Some(person_id),
                     },
                 )
                 .await
                 .with_context(|| format!("{step} add_comment"))?;
-                applied.push(json!({"type": "add_comment", "body": body}));
+                applied.push(json!({"type": "add_comment", "body": display}));
             }
 
             AgentAction::UpdateTicket {
@@ -322,7 +488,14 @@ async fn apply_actions(
                 } else {
                     title.clone()
                 };
-                let ws_id = workspace_id.unwrap_or(ctx.ticket.workspace_id);
+                let ws_id = resolve_workspace_for_agent_create_ticket(
+                    pool,
+                    job_id,
+                    company_id,
+                    ctx.ticket.workspace_id,
+                    *workspace_id,
+                )
+                .await?;
                 let type_parsed = ticket_type
                     .as_deref()
                     .and_then(|t| t.parse::<TicketType>().ok())
@@ -393,6 +566,7 @@ async fn apply_actions(
                     "type": "create_ticket",
                     "title": title,
                     "assignee_person_id": resolved_assignee.id,
+                    "workspace_id": ws_id,
                 }));
             }
 
@@ -496,6 +670,7 @@ async fn apply_actions(
                 specialty,
                 rationale,
                 scope_of_work,
+                workspace_ids,
             } => {
                 let name = if employee_display_name.trim().is_empty() {
                     warn!(job_id = %job_id, %step, "propose_hire with empty name — using placeholder");
@@ -516,7 +691,7 @@ async fn apply_actions(
                         RoleType::Specialist
                     })
                     .to_string();
-                db::hiring::create_proposal(
+                db::hiring::create_proposal_auto_accept(
                     pool,
                     company_id,
                     CreateProposalInput {
@@ -527,6 +702,10 @@ async fn apply_actions(
                         rationale: rationale.clone(),
                         scope_of_work: scope_of_work.clone(),
                         proposed_by_person_id: Some(person_id),
+                        workspace_ids: workspace_ids
+                            .as_ref()
+                            .filter(|v| !v.is_empty())
+                            .cloned(),
                     },
                 )
                 .await
@@ -553,21 +732,34 @@ async fn apply_actions(
                 } else {
                     question.clone()
                 };
-                db::decision::create_decision_request(
+                let mut body = String::from(
+                    "[Autonomous team] A founder decision was not opened; this ticket stays unblocked. Question the model raised: ",
+                );
+                body.push_str(&question_text);
+                if let Some(ref n) = context_note {
+                    let t = n.trim();
+                    if !t.is_empty() {
+                        body.push_str("\n\nContext: ");
+                        body.push_str(t);
+                    }
+                }
+                body.push_str(
+                    "\n\nProceed using founder memory, product context, and team discussion — make the call yourselves.",
+                );
+                db::ticket::create_comment(
                     pool,
-                    company_id,
-                    CreateDecisionRequestInput {
-                        ticket_id: ctx.ticket.id,
-                        raised_by_person_id: Some(person_id),
-                        question: question_text.clone(),
-                        context_note: context_note.clone(),
+                    ctx.ticket.id,
+                    CreateCommentInput {
+                        body,
+                        author_person_id: Some(person_id),
                     },
                 )
                 .await
-                .with_context(|| format!("{step} request_decision"))?;
+                .with_context(|| format!("{step} request_decision (logged as comment)"))?;
                 applied.push(json!({
                     "type": "request_decision",
                     "question": question_text,
+                    "note": "recorded as comment only; ticket not blocked",
                 }));
             }
 
@@ -611,7 +803,7 @@ async fn apply_actions(
                         body.push_str(t);
                     }
                 }
-                let _id = db::product_brain::insert_pending(
+                let pending_id = db::product_brain::insert_pending(
                     pool,
                     ctx.company_id,
                     Some(ctx.ticket.workspace_id),
@@ -620,9 +812,18 @@ async fn apply_actions(
                 )
                 .await
                 .with_context(|| format!("{step} propose_brain_insight"))?;
+                db::product_brain::approve_pending(
+                    pool,
+                    pending_id,
+                    ApprovePendingBrainInput { body: None },
+                )
+                .await
+                .with_context(|| format!("{step} propose_brain_insight approve"))?
+                .ok_or_else(|| anyhow::anyhow!("brain insight was not promoted"))?;
                 applied.push(json!({
                     "type": "propose_brain_insight",
                     "ticket_id": ctx.ticket.id,
+                    "promoted": true,
                 }));
             }
         }

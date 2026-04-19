@@ -63,15 +63,34 @@ pub async fn create_person(
         .parse::<RoleType>()
         .map_err(|e| ApiError::BadRequest(e))?;
 
+    let mut ai_profile_id = req.ai_profile_id;
+    if matches!(kind, PersonKind::AiAgent) && ai_profile_id.is_none() {
+        ai_profile_id =
+            db::person::ai_profile_id_of_ai_co_founder(&state.pool, company_id).await?;
+    }
+    if matches!(kind, PersonKind::AiAgent) && ai_profile_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "AI agents need an AI profile — link one in the form or add an AI co-founder with a profile first."
+                .into(),
+        ));
+    }
+
     let input = CreatePersonInput {
         kind,
         display_name: req.display_name.trim().to_string(),
         role_type,
         specialty: req.specialty,
-        ai_profile_id: req.ai_profile_id,
+        ai_profile_id,
     };
 
     let person = db::person::create_person(&state.pool, company_id, input).await?;
+
+    if matches!(person.kind, PersonKind::AiAgent) && person.role_type == RoleType::CoFounder {
+        db::workspace_member::ensure_ai_cofounders_in_all_company_workspaces(&state.pool, company_id)
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    }
+
     Ok((StatusCode::CREATED, Json(person)))
 }
 

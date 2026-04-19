@@ -87,7 +87,7 @@ export default function TeamPage() {
   const [providerConfig, setProviderConfig] = useState<Record<string, string>>({
     base_url: "http://127.0.0.1:11434",
   });
-  const [newModelId, setNewModelId] = useState("");
+  const [newModelId, setNewModelId] = useState("gemma4:e2b");
   const [connStatus, setConnStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [connError, setConnError] = useState<string | null>(null);
 
@@ -199,7 +199,7 @@ export default function TeamPage() {
     setAiSetupMode("new");
     setSelectedProviderKind("ollama");
     setProviderConfig({ base_url: "http://127.0.0.1:11434" });
-    setNewModelId("");
+    setNewModelId("gemma4:e2b");
     setConnStatus("idle");
     setConnError(null);
   }

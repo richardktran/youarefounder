@@ -54,6 +54,9 @@ pub struct HiringProposal {
     pub founder_response_text: Option<String>,
     /// Set after accept — points at the newly created `Person`.
     pub created_person_id: Option<Uuid>,
+    /// Workspaces the hire should join (ignored for `co_founder` — they join all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_ids: Option<Vec<Uuid>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -68,6 +71,9 @@ pub struct CreateProposalInput {
     pub ai_profile_id: Option<Uuid>,
     pub rationale: Option<String>,
     pub scope_of_work: Option<String>,
+    /// Workspaces to add the person to on accept (not used for `co_founder` hires).
+    #[serde(default)]
+    pub workspace_ids: Option<Vec<Uuid>>,
 }
 
 /// Input for accepting a proposal (creates a new Person).

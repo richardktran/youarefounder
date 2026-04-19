@@ -100,5 +100,9 @@ pub async fn complete_onboarding(
     .await?
     .ok_or(ApiError::NotFound)?;
 
+    db::workspace_member::ensure_ai_cofounders_in_all_company_workspaces(&state.pool, company_id)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     Ok(Json(updated))
 }

@@ -42,6 +42,13 @@ pub async fn create_workspace(
     }
 
     let workspace = db::workspace::create_workspace(&state.pool, company_id, input).await?;
+    db::workspace_member::ensure_ai_cofounders_in_workspace(
+        &state.pool,
+        company_id,
+        workspace.id,
+    )
+    .await
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(workspace)))
 }
 

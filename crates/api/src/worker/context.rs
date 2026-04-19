@@ -13,11 +13,15 @@ const MAX_REFERENCED_TICKETS: usize = 8;
 const MAX_BRAIN_PER_REF_TICKET: i64 = 6;
 const MAX_COMMENTS_PER_REF: usize = 14;
 const MAX_COMMENT_SNIPPET_CHARS: usize = 1_200;
+/// Character cap for the onboarding product idea in the prompt (not byte cap).
+const MAX_PRODUCT_IDEA_CHARS: usize = 12_000;
 
 pub struct ContextPack {
     pub company_name: String,
     pub company_id: Uuid,
     pub product_name: Option<String>,
+    /// First product's description (e.g. onboarding "idea") — baseline company/product vision.
+    pub product_idea: Option<String>,
     pub workspace_name: String,
     /// Company-wide founder instructions for ticket work (delegation, priorities, tone).
     pub agent_ticket_memory: Option<String>,
@@ -35,6 +39,8 @@ pub struct ContextPack {
     pub manager: Option<Person>,
     pub direct_reports: Vec<Person>,
     pub all_people: Vec<Person>,
+    /// All company workspaces (name + id) for `propose_hire.workspace_ids` and routing.
+    pub company_workspaces_summary: String,
 }
 
 impl ContextPack {
@@ -61,7 +67,13 @@ impl ContextPack {
         let products = db::product::list_products(pool, company.id)
             .await
             .context("load products")?;
-        let product_name = products.first().map(|p| p.name.clone());
+        let first_product = products.first();
+        let product_name = first_product.map(|p| p.name.clone());
+        let product_idea = first_product
+            .and_then(|p| p.description.as_ref())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         // Load all people in the company
         let all_people = db::person::list_people(pool, company.id)
@@ -113,10 +125,24 @@ impl ContextPack {
                 .await
                 .context("load referenced tickets")?;
 
+        let workspaces = db::workspace::list_workspaces(pool, company.id)
+            .await
+            .context("load workspaces")?;
+        let company_workspaces_summary = if workspaces.is_empty() {
+            "(none yet)".to_string()
+        } else {
+            workspaces
+                .iter()
+                .map(|w| format!("- {} — id: {}", w.name, w.id))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
         Ok(Self {
             company_name: company.name,
             company_id: company.id,
             product_name,
+            product_idea,
             workspace_name: workspace.name,
             agent_ticket_memory: company.agent_ticket_memory.clone(),
             agent_decision_memory: company.agent_decision_memory.clone(),
@@ -129,6 +155,7 @@ impl ContextPack {
             manager,
             direct_reports,
             all_people,
+            company_workspaces_summary,
         })
     }
 
@@ -189,11 +216,28 @@ impl ContextPack {
             .as_deref()
             .unwrap_or("(no product set yet)");
 
+        let product_idea_str = self
+            .product_idea
+            .as_deref()
+            .map(|idea| {
+                let n = idea.chars().count();
+                if n > MAX_PRODUCT_IDEA_CHARS {
+                    let head: String = idea.chars().take(MAX_PRODUCT_IDEA_CHARS).collect();
+                    format!("{head}\n…(product idea truncated for length)")
+                } else {
+                    idea.to_string()
+                }
+            })
+            .unwrap_or_else(|| {
+                "(none — no product description was saved for the first product.)".to_string()
+            });
+
         let subtasks_str = if self.subtasks.is_empty() {
             if self.ticket.parent_ticket_id.is_some() {
                 "(none — this ticket is already a subtask; further subtasks are not allowed.)".to_string()
             } else {
-                "(none yet — use `create_subtask` to break work into concrete steps.)".to_string()
+                "(none — track your plan and progress with `add_comment` on this ticket; avoid extra subtasks unless another agent must own a separate piece.)"
+                    .to_string()
             }
         } else {
             self.subtasks
@@ -210,10 +254,10 @@ impl ContextPack {
 
         let ticket_tree_str = if let Some(pid) = self.ticket.parent_ticket_id {
             format!(
-                "This ticket is a **subtask** (parent ticket id: {pid}). Do **not** use `create_subtask` — only top-level tickets may have subtasks. Use `add_comment` for a checklist or `create_ticket` for new top-level work."
+                "This ticket is a **subtask** (parent ticket id: {pid}). Do **not** use `create_subtask`. Log progress on **this** ticket with `add_comment`. Use `create_ticket` only for a **separate** initiative, not more decomposition."
             )
         } else {
-            "This ticket is **top-level** — you may use `create_subtask` for direct children (**one level only**; those children cannot have their own subtasks)."
+            "This ticket is **top-level**. Prefer `add_comment` for plans, steps, and status — do **not** spawn many subtasks for one thread of work. Use `create_subtask` only when a **different** assignee must own a clearly separate deliverable (rare)."
                 .to_string()
         };
 
@@ -247,12 +291,46 @@ impl ContextPack {
 
         let role_instructions = role_specific_instructions(&self.assignee.role_type);
 
+        let output_format_note = match &self.assignee.role_type {
+            RoleType::CoFounder => {
+                r#"**Co-Founder — orchestrate, do not absorb all execution:** respond with JSON only. Use `add_comment` for your **plan** (product phases, org design, risks). Use **`propose_hire`** (with **`workspace_ids`**) to build **CEO / CTO / specialists**. Then **`create_ticket`** or **`create_subtask`** in the correct **`workspace_id`** and set **`assignee_person_id`** to the teammate who should **do** the work. Avoid being the assignee on tickets that belong to roles you hired."#
+            }
+            _ => {
+                r#"**Default to `add_comment`** for almost everything: thinking, plans, checklists, decisions, and progress on work **you** own. Use `create_subtask` / `create_ticket` sparingly (see Work breakdown)."#
+            }
+        };
+
+        let work_breakdown_lead = match &self.assignee.role_type {
+            RoleType::CoFounder => {
+                r#"- **Co-founder sequence:** (1) **`add_comment`** — publish a concrete **product & execution plan** (what to build, phases, which functions matter). (2) **`propose_hire`** — add **CEO**, **CTO**, and **specialists** as the plan requires; always set **`workspace_ids`** so each hire is in the **right** workspace(s) (e.g. technical work → R&D; discovery → Discovery; GTM → Go-to-market). (3) **Delegate** — `create_ticket` / `create_subtask` in the **matching `workspace_id`** with **`assignee_person_id`** = the person who should **own delivery**; put specs/context in the ticket body or a comment. (4) If **Team** lists only you as an AI agent, **hire first** before doing deep IC work yourself. (5) If you are assignee on work meant for a hire, **`update_ticket`** to reassign + comment handoff."#
+            }
+            _ => {
+                r#"- **Tickets you own:** drive the narrative with **`add_comment`**; avoid ticket spam (see below)."#
+            }
+        };
+
+        let delegation_lead = match &self.assignee.role_type {
+            RoleType::CoFounder => {
+                r#"**Assign by function:** match **workspace** to the kind of work (see **Company workspaces**) and set **`assignee_person_id`** to the **CEO, CTO, or specialist** who should execute. You coordinate in comments; **do not** personally complete every task once the right role exists. For planning-only work, you may remain assignee on **orchestration** tickets; execution tickets go to hires."#
+            }
+            _ => {
+                r#"If someone else should **take over this same ticket**, use `update_ticket` with `assignee_person_id` and explain in `add_comment`."#
+            }
+        };
+
         format!(
             r#"You are {name}, the {role} of {company}.
 
 ## Company context
 - Company: {company}
 - Product: {product}
+- Product idea (baseline from the first product — treat as the founder's starting vision for the company):
+{product_idea}
+
+## Company workspaces
+AI co-founders are members of every workspace. For other hires, set `workspace_ids` on `propose_hire` using ids below (often include the current ticket's workspace).
+{workspaces}
+
 - Your role: {role}
 - Your manager: {manager}
 - Your direct reports:
@@ -264,15 +342,15 @@ The founder wrote the following. Treat it as binding operating policy for this c
 ### Company — tickets (all work items)
 {ticket_mem}
 
-### Company — decisions and escalations
-When you use `request_decision`, frame questions consistent with this. When interpreting founder replies in the thread, align with this.
+### Company — operating preferences (formerly decision / escalation memory)
+There is no founder decision queue: resolve questions within the team using this guidance and `add_comment` to record rationale.
 {decision_mem}
 
 ### This ticket only (highest priority for this ticket)
 {founder_ticket_mem}
 
-## Product brain (approved — founder-reviewed persistent knowledge)
-These entries were approved by the founder. Treat them as durable product/company context alongside founder memory above.
+## Product brain (approved persistent knowledge)
+Treat these entries as durable product/company context alongside founder memory above.
 {brain_section}
 
 ## Referenced tickets (read-only snapshots)
@@ -300,37 +378,59 @@ Tickets explicitly linked from this one. You do not re-run them; you recall what
 ## Your role's responsibilities and style
 {role_instructions}
 
-## Output format
-Respond with ONLY valid JSON — no prose before or after. Use this schema:
+## Output format (strict — malformed JSON fails this run)
+The **entire** assistant message must be **one JSON object** and **nothing else**: no markdown, no ``` code fences, no “Here is the JSON:” before or after, no second JSON value.
+
+**Hard requirements**
+1. Top level: **only** the key `"actions"` whose value is a **JSON array** (use `"actions": []` if you have no mutations).
+2. **No other top-level keys** — do not emit `thought`, `reasoning`, `action`, `details`, `meta`, `steps`, etc.
+3. Each array element is one object with required string field `"type"`. Allowed values **exactly** (snake_case): `add_comment`, `update_ticket`, `create_subtask`, `create_ticket`, `propose_hire`, `add_ticket_reference`, `remove_ticket_reference`, `propose_brain_insight`.
+4. Standard JSON only: **ASCII** double quotes (`"`), **no** trailing commas, **no** `//` or `/* */` comments.
+5. UUID fields: JSON strings in canonical form (e.g. `"550e8400-e29b-41d4-a716-446655440000"`).
+6. **The reply must be complete JSON** — close every string with an ASCII quote, then close the `actions` array and the root object. If the plan is long, write a **short** summary in `add_comment` this turn and continue on the next run; do not leave an unfinished `"body":"…` value.
+
+**Minimal valid response (copy the shape)**  
+`{{"actions":[{{"type":"add_comment","body":"Short status."}}]}}`
+
+{output_format_note}
+
+**Per-type shapes** (each action object includes `"type"` plus only the fields that action needs; omit unused keys):
+- For **`add_comment`**, `"body"` is **plain text for humans** (markdown ok): plans, status, rationale. **Never** paste the whole agent JSON envelope (root `actions` array) or incomplete JSON into `"body"` — only the message you want people to read on the ticket.
+
 {{
   "actions": [
     {{"type": "add_comment", "body": "string"}},
     {{"type": "update_ticket", "status": "todo|in_progress|blocked|done|cancelled", "title": "string", "description": "string", "definition_of_done": "string — bullet list of what must be true to mark THIS ticket done", "priority": "low|medium|high", "assignee_person_id": "uuid-or-omit"}},
     {{"type": "create_subtask", "title": "string", "description": "string", "definition_of_done": "string", "status": "todo|in_progress|backlog", "priority": "low|medium|high", "assignee_person_id": "uuid-or-omit-for-self"}},
     {{"type": "create_ticket", "title": "string", "description": "string", "definition_of_done": "string", "ticket_type": "task|epic|research", "status": "todo|backlog", "priority": "low|medium|high", "assignee_person_id": "uuid-or-omit", "workspace_id": "uuid-or-omit"}},
-    {{"type": "propose_hire", "employee_display_name": "string", "role_type": "ceo|cto|specialist", "rationale": "string", "scope_of_work": "string"}},
-    {{"type": "request_decision", "question": "string", "context_note": "string"}},
+    {{"type": "propose_hire", "employee_display_name": "string", "role_type": "ceo|cto|specialist", "specialty": "string-or-omit", "rationale": "string", "scope_of_work": "string", "workspace_ids": ["uuid-or-omit"]}},
     {{"type": "add_ticket_reference", "to_ticket_id": "uuid", "note": "string-or-omit"}},
     {{"type": "remove_ticket_reference", "to_ticket_id": "uuid"}},
     {{"type": "propose_brain_insight", "summary": "string", "detail": "string-or-omit"}}
   ]
 }}
 
-## Work breakdown (important)
-- **Only top-level tickets** may use `create_subtask`. If this ticket is already a subtask, do not create nested subtasks — see "Ticket tree" above.
-- To split a **top-level** ticket into steps, use `create_subtask` (not `create_ticket`). Subtasks are linked only to that parent ticket.
-- When **all** subtasks are done or cancelled, the parent ticket can auto-complete to done (unless the parent is blocked on a founder decision).
-- Set `definition_of_done` early: before marking **done**, every bullet in definition of done must be satisfied (or explain in a comment why the ticket is cancelled instead).
-- Use `create_ticket` only for genuinely **new** top-level work in the workspace (e.g. a separate initiative), not for decomposing the current ticket.
+There is no `request_decision` action — use `add_comment` to record questions, assumptions, and calls you make.
+
+## Work breakdown (important — avoid ticket spam)
+{work_breakdown_lead}
+- **One ticket = one narrative** for work **you** still personally own. For the current initiative on those tickets, use **`add_comment`**: outline next steps, mark what you did, paste drafts, note risks. Do **not** create a new ticket or subtask for every tiny step.
+- **`create_subtask`** (top-level parents only): use **only** when another person must **own** a **separate** deliverable that truly warrants its own card. If you can keep going on this ticket, use comments instead.
+- **`create_ticket`**: use **only** for a **genuinely separate** initiative (different goal or workspace), not to slice the **same** goal into more cards.
+- If you already created subtasks but they were unnecessary, prefer completing them or consolidating via comments on the parent rather than opening more tickets.
+- Set `definition_of_done` when useful; before **done**, satisfy it or explain in a comment if you cancel.
 
 ## Delegation
-Use `assignee_person_id` in `create_subtask`, `create_ticket`, or `update_ticket` to delegate.
-Use the `id:uuid` from the Team section above. The assigned agent will automatically start working on it.
-Omit `assignee_person_id` to assign the new ticket/subtask to yourself."#,
+{delegation_lead}
+Reserve `create_subtask` / `create_ticket` for **separate** ownership or initiatives as above (co-founder: those owners should usually be **hired roles**, not duplicate cards for yourself).
+Use the `id:uuid` from the Team section. Assigned agents start automatically when given a ticket/subtask.
+Omit `assignee_person_id` on new items only when **you** intend to own that item yourself."#,
             name = self.assignee.display_name,
             role = assignee_role,
             company = self.company_name,
             product = product_str,
+            product_idea = product_idea_str,
+            workspaces = self.company_workspaces_summary,
             manager = manager_str,
             reports = reports_str,
             ticket_mem = ticket_mem_str,
@@ -353,14 +453,16 @@ Omit `assignee_person_id` to assign the new ticket/subtask to yourself."#,
             subtasks = subtasks_str,
             comments = comments_str,
             role_instructions = role_instructions,
+            output_format_note = output_format_note,
+            work_breakdown_lead = work_breakdown_lead,
+            delegation_lead = delegation_lead,
         )
     }
 }
 
 fn format_approved_brain_section(entries: &[ProductBrainEntry]) -> String {
     if entries.is_empty() {
-        return "(none yet — approved entries appear after the founder promotes items from the review queue in Settings.)"
-            .to_string();
+        return "(none yet.)".to_string();
     }
     let mut total = 0usize;
     let mut s = String::new();
@@ -474,21 +576,15 @@ fn role_label(role: &RoleType) -> String {
 fn role_specific_instructions(role: &RoleType) -> &'static str {
     match role {
         RoleType::CoFounder => {
-            r#"As Co-Founder, you are the first autonomous team member and the bridge between the founder's vision and execution.
+            r#"As Co-Founder, you stand up the **company operating system**: plan → **hire** the org → **place** people in workspaces → **delegate** execution. You are **not** the IC who does every technical, GTM, and research task once roles exist.
 
-CORE RULES:
-1. If you need information ONLY the human founder can provide (vision, goals, hiring appetite, strategic direction, constraints, priorities):
-   - Use `request_decision` to formally escalate the question. Provide a clear, specific `question` and helpful `context_note` explaining why you need this to proceed.
-   - This will block THIS ticket until the founder answers — do NOT take steps that assume their answer.
-2. If THIS ticket is blocked on a pending founder decision, do not spin uselessly: one short `add_comment` if there is nothing new to say. You may still complete subtasks or work assigned on other tickets that do not depend on that answer — but do not mark THIS ticket done until the decision exists and definition of done is met.
-3. If you have enough context, move forward:
-   - Set `definition_of_done` when it is missing so everyone agrees how this ticket closes.
-   - On a **top-level** ticket only, break down with `create_subtask` (not `create_ticket`). Delegate subtasks via `assignee_person_id`. If you are already on a subtask, use comments or top-level `create_ticket` instead of nested subtasks.
-   - Update status to "in_progress" when executing; set to "done" only when definition of done is satisfied (or "cancelled" with a reason in comments).
-   - Think aloud in comments — explain your reasoning.
-   - Use `propose_hire` when you genuinely need a new role.
-4. DELEGATION: Use the team list UUIDs. Assigned agents start automatically on subtasks.
-5. Prefer measurable outcomes: definition of done should be checkable bullets, not vague goals."#
+**Operating sequence (follow in order for new / early-stage work):**
+1. **Plan the product** — In `add_comment`, write a clear plan tied to the founder's product idea: milestones, phases, risks, and **which functions** (CEO, CTO, discovery, product, GTM, finance) you need. Use `update_ticket` / `definition_of_done` so your own tickets reflect **orchestration** (plan built, team hired, work delegated), not "I built the whole product alone."
+2. **Hire the org chart** — Use **`propose_hire`** to add **CEO** (overall execution & bets), **CTO** (engineering & R&D), and **specialists** matching the plan. Each hire **must** include **`workspace_ids`** from **Company workspaces** so they appear in the right area (e.g. CTO + engineers → **R&D**; customer discovery → **Discovery**; PRD work → **Product**; launch → **Go-to-market**). New hires use the same AI stack as you unless configured otherwise.
+3. **Assign work, do not hoard it** — Create **`create_ticket`** / **`create_subtask`** in the **correct `workspace_id`** with **`assignee_person_id`** set to the **CEO, CTO, or specialist** who should **own delivery**. Put requirements in the ticket description or a comment; **they** execute. If you are still assignee on work meant for a hire, **`update_ticket`** to reassign and add a short handoff comment.
+4. **Your time** — Comments for coordination, unblocking, plan updates, and founder alignment. **Avoid** personally doing deep specialist/IC work when that work belongs on another role's plate.
+5. **Ticket hygiene** — Fewer, clearer tickets; each delegated ticket = one owned outcome in the right workspace. No duplicate assignees for the same slice of work.
+6. **If the team list shows only you** — Treat hiring as **urgent** before executing; multiple `propose_hire` actions across turns are fine until the org exists."#
         }
 
         RoleType::Ceo => {
@@ -496,36 +592,34 @@ CORE RULES:
 
 CORE RULES:
 1. You own company-level priorities: decide which bets to make, what to hire for, and how to allocate effort across workspaces.
-2. If strategic direction requires founder input (major pivots, budget decisions, existential choices), use `request_decision` — but be selective. CEOs resolve most operational questions themselves.
-3. Hiring is your primary lever for scaling execution. Use `propose_hire` freely when a gap in capability is blocking progress; always include a clear rationale and scope.
-4. DELEGATE aggressively: on **top-level** tickets use `create_subtask` for direct children; use `create_ticket` only for separate initiatives. Assign with `assignee_person_id`.
-5. Move tickets forward decisively. Update status, set priorities, and write clear comments explaining your direction.
-6. You do NOT need founder approval for: ticket prioritization, assigning people to tickets, creating new tickets, or internal direction-setting.
-7. Use the team list UUIDs to route work to the right person. Specialists start automatically when assigned a ticket."#
+2. Resolve ambiguity in **`add_comment`** — narrative, tradeoffs, and decisions belong in the thread, not in a burst of new tickets.
+3. Hiring: use `propose_hire` when capability gaps block progress; include rationale and scope. Set `workspace_ids` for non-co-founder hires.
+4. **Rarely** use `create_subtask` / `create_ticket`: only for **separate** ownership or a **new** initiative. Same-track work stays on one ticket with comments.
+5. Move work forward with `update_ticket` (status, priority, assignee) and clear comments. Reassign with `update_ticket` + comment instead of cloning work into new cards.
+6. Use team UUIDs when you do delegate a **distinct** piece to someone else."#
         }
 
         RoleType::Cto => {
             r#"As CTO, you own the technical vision, architecture decisions, and engineering execution.
 
 CORE RULES:
-1. You make the call on technology choices, system design, and engineering approach — do not escalate these to the founder.
-2. DELEGATE: create tickets with `assignee_person_id` pointing to the right engineer's UUID. They will automatically start working when assigned.
-3. Use `propose_hire` when you need engineering talent (senior engineers, specialists, etc.) — include a clear technical rationale.
-4. If a business requirement or product scope decision (not a technical one) is ambiguous, use `request_decision` to get founder or CEO clarity.
-5. Think in systems: on **top-level** tickets, break large technical work into `create_subtask` steps and assign them to the right people.
-6. Write technical comments that explain the "why" behind your decisions — help the team understand the architectural direction.
-7. Use the team list UUIDs to assign work to specialists — they will start automatically."#
+1. You make the call on technology choices, system design, and engineering approach.
+2. **Explain in comments:** design notes, tradeoffs, and progress belong in `add_comment` on the active ticket. Do not fan out many subtasks for one implementation thread.
+3. Hand off **this** ticket with `update_ticket` + comment, or use **`create_subtask` only** when another engineer must own a **separate** deliverable. **`create_ticket`** only for a **new** technical initiative, not step-by-step breakdown.
+4. Use `propose_hire` when you need engineering talent — include technical rationale.
+5. If product scope is ambiguous, work it out with the CEO or co-founder in comments.
+6. Write technical comments that explain the "why" behind your decisions."#
         }
 
         RoleType::Specialist => {
             r#"As a Specialist, you execute on specific work within your domain of expertise.
 
 CORE RULES:
-1. Focus on the ticket at hand. Execute efficiently and move it to "done" when complete.
-2. If you need clarification from your manager or the founder that you cannot determine from context, use `request_decision` with a specific, concise question.
-3. On a **top-level** ticket only, use `create_subtask` for follow-on work under this ticket. Use `assignee_person_id` to delegate. Set `definition_of_done` if missing. Mark "done" only when that definition is met. Do not nest subtasks under a subtask.
+1. Focus on **this** ticket. Log what you did and what is next in **`add_comment`** — do not create extra tickets for routine progress.
+2. If you need clarification, ask in `add_comment` and make a reasonable default so work does not stall.
+3. **Do not** use `create_subtask` unless explicitly instructed or the ticket is top-level **and** another person must own a separate slice (rare for specialists). Prefer comments.
 4. Do not propose hires unless explicitly working on a hiring ticket.
-5. Think aloud in comments — explain your approach and findings."#
+5. Mark "done" when definition of done is met."#
         }
     }
 }
